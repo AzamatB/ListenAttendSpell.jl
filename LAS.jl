@@ -1,6 +1,6 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
 using Flux
-using Flux: reset!, onehotbatch, throttle, train!, @treelike, @epochs
+using Flux: flip, reset!, onehotbatch, throttle, train!, @treelike, @epochs
 using IterTools
 using JLD2
 using StatsBase
@@ -10,7 +10,7 @@ using StatsBase
 struct BLSTM{L,D}
    forward  :: L
    backward :: L
-   output   :: D
+   dense    :: D
 end
 
 @treelike BLSTM
@@ -18,17 +18,20 @@ end
 function BLSTM(in::Integer, hidden::Integer, out::Integer, σ = identity)
    forward  = LSTM(in, hidden)
    backward = LSTM(in, hidden)
-   output   = Dense(2hidden, out, σ)
-   return BLSTM(forward, backward, output)
+   dense    = Dense(2hidden, out, σ)
+   return BLSTM(forward, backward, dense)
 end
 
 BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), D_out)
 
-(m::BLSTM)(X::AbstractMatrix)::AbstractMatrix = m.output([m.forward(X); reverse(m.backward(reverse(X; dims=2)); dims=2)])
+(m::BLSTM)(xs::AbstractVector)::AbstractVector = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
 
 Flux.reset!(m::BLSTM) = Flux.reset!((m.forward, m.backward))
 
-restack(X::AbstractMatrix)::AbstractMatrix = [X[:,1:2:size(X,2)]; X[:,2:2:size(X,2)]]
+function restack(xs::AbstractVector)::AbstractVector
+   T = length(xs)
+   return vcat.(xs[1:2:T], xs[2:2:T])
+end
 
 """
    PBLSTM(D_in::Integer, D_out::Integer)
