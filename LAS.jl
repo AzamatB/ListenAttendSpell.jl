@@ -24,11 +24,11 @@ end
 
 BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), D_out)
 
-(m::BLSTM)(xs::AbstractVector)::AbstractVector = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
+(m::BLSTM)(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector} = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
 
-Flux.reset!(m::BLSTM) = Flux.reset!((m.forward, m.backward))
+Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward))
 
-function restack(xs::AbstractVector)::AbstractVector
+function restack(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector}
    T = length(xs)
    return vcat.(xs[1:2:T], xs[2:2:T])
 end
@@ -110,18 +110,18 @@ end
 Decoder(D_in::Integer, D_out::Integer, hidden_sizes) = Decoder((D_in, hidden_sizes..., D_out))
 
 
-function CharacterDistribution(D_in::Integer, D_out::Integer, σ::Function; nlayers::Integer, log::Bool=true)
-   f = log ? logsoftmax : softmax
+function CharacterDistribution(D_in::Integer, D_out::Integer, σ::Function; nlayers::Integer, applylog::Bool=true)
+   f = applylog ? logsoftmax : softmax
    layer_sizes = ceil.(Int, range(D_in, D_out; length=nlayers+1))
    layer_dims = Tuple(partition(layer_sizes, 2, 1))
    layers = ( Dense(D_in, D_out, σ) for (D_in, D_out) ∈ layer_dims[1:end-1] )
    return Chain(layers..., Dense(layer_dims[end]...), f)
 end
 
-CharacterDistribution(D_in::Integer, D_out::Integer; log::Bool=true) = Chain(Dense(D_in, D_out), log ? logsoftmax : softmax)
+CharacterDistribution(D_in::Integer, D_out::Integer; applylog::Bool=true) = Chain(Dense(D_in, D_out), applylog ? logsoftmax : softmax)
 
 
-mutable struct State{T <: AbstractVector}
+mutable struct State{T <: AbstractVector{<:Real}}
    context    :: T   # last attention context
    decoding   :: T   # last decoder state
    prediction :: T   # last prediction
@@ -163,14 +163,16 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS)(X::AbstractMatrix)::AbstractMatrix
+function (m::LAS)(xs::AbstractVector{<:AbstractVector})::Vector{typeof(m.state.prediction)}
    # compute input encoding
-   H = m.listen(gpu(pad(X)))
+   hs = m.listen(xs)
+   # convert sequence of T D-dimensional vectors hs to D×T–matrix
+   H = foldl(hcat, hs)
    # precompute ψ(H)
    ψH = m.attention_ψ(H)
    # initialize prediction
-   Ŷ = m.state.prediction[:,1:0]
-   for _ ∈ axes(X,2)
+   ŷs = Vector{typeof(m.state.prediction)}(undef, length(xs))
+   for t ∈ eachindex(ŷs)
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
       # compute attention context
@@ -178,11 +180,10 @@ function (m::LAS)(X::AbstractMatrix)::AbstractMatrix
       m.state.context = sum( α * h for (α, h) ∈ zip(αs, eachcol(H)) )
       # predict probability distribution over character alphabet
       m.state.prediction = m.infer([m.state.decoding; m.state.context])
-      # concatenate with previous character predictions
-      Ŷ = [Ŷ m.state.prediction]
+      ŷs[t] = m.state.prediction
    end
-   # reset!(m::LAS)
-   return Ŷ
+   reset!(m::LAS)
+   return ŷs
 end
 
 function Flux.reset!(m::LAS)
@@ -202,13 +203,24 @@ end
 
 
 # load data
-X, y, Xs_train, ys_train, Xs_eval, ys_eval, Xs_val, ys_val, Xs_test, ys_test, PHN2IDX, PHN_IDCS = let val_set_size = 32
+X, y,
+Xs_train, ys_train,
+Xs_eval, ys_eval,
+Xs_val, ys_val,
+Xs_test, ys_test,
+PHN2IDX, PHN_IDCS =
+let val_set_size = 32
    JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys PHN2IDX PHN_IDCS
    Xs_val, ys_val, Xs_test, ys_test = Xs[1:val_set_size], ys[1:val_set_size], Xs[(val_set_size+1):end], ys[(val_set_size+1):end]
    JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHN2IDX PHN_IDCS
    eval_idcs = sample(eachindex(ys), val_set_size; replace=false)
    Xs_eval, ys_eval = Xs[eval_idcs], ys[eval_idcs]
-   first(Xs), first(ys), Xs, ys, Xs_eval, ys_eval, Xs_val, ys_val, Xs_test, ys_test, PHN2IDX, PHN_IDCS
+   first(Xs), first(ys),
+   Xs, ys,
+   Xs_eval, ys_eval,
+   Xs_val, ys_val,
+   Xs_test, ys_test,
+   PHN2IDX, PHN_IDCS
 end
 
 
