@@ -28,7 +28,7 @@ BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), 
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
-function restack(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector}
+function restack(xs::T)::T where {T <: AbstractVector{<:AbstractVector}}
    T = length(xs)
    return vcat.(xs[1:2:T], xs[2:2:T])
 end
@@ -173,15 +173,17 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS{T})(xs::AbstractVector{<:AbstractVector})::Vector{T} where T
+function (m::LAS{T})(xs::AbstractVector{<:AbstractVector})::AbstractVector{T} where T
+   len = length(xs)
+   pad!(xs)
    # compute input encoding
-   hs = m.listen(xs)
+   hs = m.listen(xs |> gpu)
    # convert sequence of T D-dimensional vectors hs to D×T–matrix
    H = foldl(hcat, hs)
    # precompute ψ(H)
    ψH = m.attention_ψ(H)
    # initialize prediction
-   ŷs = Vector{T}(undef, length(xs))
+   ŷs = similar(xs, T, len)
    for t ∈ eachindex(ŷs)
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
@@ -203,12 +205,13 @@ function Flux.reset!(m::LAS)
    return nothing
 end
 
-function pad(X::AbstractMatrix; multiplicity::Integer=8)::AbstractMatrix
-   T = size(X,2)
+function pad!(xs::T; multiplicity::Integer=8)::T where {T <: AbstractVector{<:AbstractVector}}
+   T = length(xs)
    Δ = ceil(Int, T / multiplicity)multiplicity - T
-   x_min = minimum(X)
-   X = [X fill(x_min, size(X,1), Δ)]
-   return X
+   el_min = minimum(minimum(xs))
+   x = fill!(similar(first(xs)), el_min)
+   append!(xs, fill(x, Δ))
+   return nothing
 end
 
 
