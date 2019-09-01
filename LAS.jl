@@ -166,7 +166,7 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS)(xs::AbstractVector{<:AbstractVector})::Vector{typeof(m.state.prediction)}
+function (m::LAS{V})(xs::AbstractVector{<:AbstractVector})::Vector{V} where V
    # compute input encoding
    hs = m.listen(xs)
    # convert sequence of T D-dimensional vectors hs to D×T–matrix
@@ -174,7 +174,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractVector})::Vector{typeof(m.state.p
    # precompute ψ(H)
    ψH = m.attention_ψ(H)
    # initialize prediction
-   ŷs = Vector{typeof(m.state.prediction)}(undef, length(xs))
+   ŷs = Vector{V}(undef, length(xs))
    for t ∈ eachindex(ŷs)
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
