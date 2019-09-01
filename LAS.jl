@@ -136,13 +136,13 @@ function Flux.reset!(s::State)
 end
 
 
-struct LAS{E, Dϕ, Dψ, L, C, S}
+struct LAS{V, E, Dϕ, Dψ, L, C}
+   state       :: State{V} # current state of the model
    listen      :: E   # encoder function
    attention_ϕ :: Dϕ  # attention context function
    attention_ψ :: Dψ  # attention context function
    spell       :: L   # RNN decoder
    infer       :: C   # character distribution inference function
-   state       :: S   # current state of the model
 end
 
 @treelike LAS
@@ -151,15 +151,18 @@ function LAS(D_in::Integer, D_out::Integer;
              D_encoding::Integer,
              D_attention::Integer,
              D_decoding::Integer)
+
+   context₀    = param(zeros(Float32, D_encoding))
+   decoding₀   = param(zeros(Float32, D_decoding))
+   prediction₀ = param(zeros(Float32, D_out))
+
    listen      = Encoder(D_in, D_encoding)
    attention_ϕ = MLP(D_decoding, D_attention)
    attention_ψ = MLP(D_encoding, D_attention)
    spell       = Decoder(D_encoding + D_decoding + D_out, D_decoding)
    infer       = CharacterDistribution(D_encoding + D_decoding, D_out)
-   context₀    = param(zeros(Float32, D_encoding))
-   decoding₀   = param(zeros(Float32, D_decoding))
-   prediction₀ = param(zeros(Float32, D_out))
-   las = LAS(listen, attention_ϕ, attention_ψ, spell, infer, State(context₀, decoding₀, prediction₀)) |> gpu
+
+   las = LAS(State(context₀, decoding₀, prediction₀), listen, attention_ϕ, attention_ψ, spell, infer) |> gpu
    return las
 end
 
