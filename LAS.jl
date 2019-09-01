@@ -173,11 +173,9 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS{V})(xs::AbstractVector{<:AbstractVector})::AbstractVector{V} where V
-   T = length(xs)
-   pad!(xs)
+function (m::LAS{V})(xs::AbstractVector{<:AbstractVector}, T = length(xs))::AbstractVector{V} where V
    # compute input encoding
-   hs = m.listen(xs |> gpu)
+   hs = m.listen(xs)
    # convert sequence of T D-dimensional vectors hs to D×T–matrix
    H = foldl(hcat, hs)
    # precompute ψ(H)
@@ -205,15 +203,23 @@ function Flux.reset!(m::LAS)
    return nothing
 end
 
-function pad!(xs::AbstractVector{<:AbstractVector}; multiplicity::Integer=8)
+function pad!(xs::VV; multiplicity::Integer=8)::VV where {VV <: AbstractVector{<:AbstractVector}}
    T = length(xs)
    Δ = ceil(Int, T / multiplicity)multiplicity - T
    el_min = minimum(minimum(xs))
    x = fill!(similar(first(xs)), el_min)
    append!(xs, fill(x, Δ))
-   return nothing
+   return xs |> gpu
 end
 
+function pad(X::AbstractMatrix; multiplicity::Integer=8)::AbstractVector{<:AbstractVector}
+   T = size(X,2)
+   Δ = ceil(Int, T / multiplicity)multiplicity - T
+   el_min = minimum(X)
+   X = [X fill(el_min, size(X,1), Δ)] |> gpu
+   xs = [x for x ∈ eachcol(X)]
+   return xs
+end
 
 # load data
 X, y,
@@ -251,7 +257,14 @@ D_LSTM_speller = 512
 const las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
 function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector)::Real
-   ŷs = las(xs)
+   T = length(xs)
+   ŷs = las(pad!(xs), T)
+   l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
+   return l
+end
+
+function loss(X::AbstractMatrix, y::AbstractVector)::Real
+   ŷs = las(pad(X), size(X,2))
    l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
    return l
 end
