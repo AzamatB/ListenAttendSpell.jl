@@ -28,7 +28,7 @@ BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), 
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
-function restack(xs::T)::T where {T <: AbstractVector{<:AbstractVector}}
+function restack(xs::VV)::VV where {VV <: AbstractVector{<:AbstractVector}}
    T = length(xs)
    return vcat.(xs[1:2:T], xs[2:2:T])
 end
@@ -121,14 +121,14 @@ end
 CharacterDistribution(D_in::Integer, D_out::Integer; applylog::Bool=true) = Chain(Dense(D_in, D_out), applylog ? logsoftmax : softmax)
 
 
-mutable struct State{T <: AbstractVector{<:Real}}
-   context     :: T   # last attention context
-   decoding    :: T   # last decoder state
-   prediction  :: T   # last prediction
+mutable struct State{V <: AbstractVector{<:Real}}
+   context     :: V   # last attention context
+   decoding    :: V   # last decoder state
+   prediction  :: V   # last prediction
    # reset values
-   context₀    :: T
-   decoding₀   :: T
-   prediction₀ :: T
+   context₀    :: V
+   decoding₀   :: V
+   prediction₀ :: V
 end
 
 @treelike State
@@ -148,8 +148,8 @@ function Flux.reset!(s::State)
 end
 
 
-struct LAS{T, E, Dϕ, Dψ, L, C}
-   state       :: State{T} # current state of the model
+struct LAS{V, E, Dϕ, Dψ, L, C}
+   state       :: State{V} # current state of the model
    listen      :: E   # encoder function
    attention_ϕ :: Dϕ  # attention context function
    attention_ψ :: Dψ  # attention context function
@@ -173,8 +173,8 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS{T})(xs::AbstractVector{<:AbstractVector})::AbstractVector{T} where T
-   len = length(xs)
+function (m::LAS{V})(xs::AbstractVector{<:AbstractVector})::AbstractVector{V} where V
+   T = length(xs)
    pad!(xs)
    # compute input encoding
    hs = m.listen(xs |> gpu)
@@ -183,7 +183,7 @@ function (m::LAS{T})(xs::AbstractVector{<:AbstractVector})::AbstractVector{T} wh
    # precompute ψ(H)
    ψH = m.attention_ψ(H)
    # initialize prediction
-   ŷs = similar(xs, T, len)
+   ŷs = similar(xs, V, T)
    for t ∈ eachindex(ŷs)
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
@@ -205,7 +205,7 @@ function Flux.reset!(m::LAS)
    return nothing
 end
 
-function pad!(xs::T; multiplicity::Integer=8)::T where {T <: AbstractVector{<:AbstractVector}}
+function pad!(xs::AbstractVector{<:AbstractVector}; multiplicity::Integer=8)
    T = length(xs)
    Δ = ceil(Int, T / multiplicity)multiplicity - T
    el_min = minimum(minimum(xs))
