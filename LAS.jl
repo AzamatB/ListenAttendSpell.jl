@@ -256,20 +256,20 @@ D_LSTM_speller = 512
 
 const las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
-function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector)::Real
+function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
    T = length(xs)
    ŷs = las(pad!(xs), T)
    l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
    return l
 end
 
-function loss(X::AbstractMatrix, y::AbstractVector)::Real
+function loss(X::AbstractMatrix, y)::Real
    ŷs = las(pad(X), size(X,2))
    l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
    return l
 end
 
-loss(xs_batch::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
+loss(xs_batch::AbstractVector{<:AbstractVecOrMat}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
 
 show_loss_val() = @show(loss(Xs_val, ys_val))
 show_loss_eval() = @show(loss(Xs_eval, ys_eval))
