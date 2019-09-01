@@ -250,17 +250,13 @@ D_LSTM_speller = 512
 
 const las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
-function loss(X::AbstractMatrix, y::AbstractVector)::Real
-   Ŷ = las(X)
-   # compute l = -sum( ŷ[i] for (ŷ, i) ∈ zip(eachcol(Ŷ), y) )
-   # in a GPU friendly way, i.e. without scalar indexing
-   num_phn = size(Ŷ,1)
-   idcs = map((n, i) -> num_phn*n + i, 0:(length(y)-1), y)
-   l = -sum(Ŷ[idcs])
+function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector)::Real
+   ŷs = las(xs)
+   l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
    return l
 end
 
-loss(Xs::AbstractVector{<:AbstractMatrix}, ys::AbstractVector{<:AbstractVector})::Real = sum(loss.(Xs, ys))
+loss(xs_batch::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
 
 show_loss_val() = @show(loss(Xs_val, ys_val))
 show_loss_eval() = @show(loss(Xs_eval, ys_eval))
