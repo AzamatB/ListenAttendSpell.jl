@@ -26,7 +26,7 @@ BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), 
 
 (m::BLSTM)(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector} = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
 
-Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward))
+# Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
 function restack(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector}
    T = length(xs)
@@ -122,22 +122,34 @@ CharacterDistribution(D_in::Integer, D_out::Integer; applylog::Bool=true) = Chai
 
 
 mutable struct State{T <: AbstractVector{<:Real}}
-   context    :: T   # last attention context
-   decoding   :: T   # last decoder state
-   prediction :: T   # last prediction
+   context     :: T   # last attention context
+   decoding    :: T   # last decoder state
+   prediction  :: T   # last prediction
+   # reset values
+   context₀    :: T
+   decoding₀   :: T
+   prediction₀ :: T
 end
 
 @treelike State
 
+function State(D_c::Integer, D_d::Integer, D_p::Integer)
+   context₀    = param(zeros(Float32, D_c))
+   decoding₀   = param(zeros(Float32, D_d))
+   prediction₀ = param(zeros(Float32, D_p))
+   return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀)
+end
+
 function Flux.reset!(s::State)
-   s.context    = param(zero(s.context))
-   s.decoding   = param(zero(s.decoding))
-   s.prediction = param(zero(s.prediction))
+   s.context    = s.context₀
+   s.decoding   = s.decoding₀
+   s.prediction = s.prediction₀
+   return nothing
 end
 
 
-struct LAS{V, E, Dϕ, Dψ, L, C}
-   state       :: State{V} # current state of the model
+struct LAS{T, E, Dϕ, Dψ, L, C}
+   state       :: State{T} # current state of the model
    listen      :: E   # encoder function
    attention_ϕ :: Dϕ  # attention context function
    attention_ψ :: Dψ  # attention context function
@@ -151,22 +163,17 @@ function LAS(D_in::Integer, D_out::Integer;
              D_encoding::Integer,
              D_attention::Integer,
              D_decoding::Integer)
-
-   context₀    = param(zeros(Float32, D_encoding))
-   decoding₀   = param(zeros(Float32, D_decoding))
-   prediction₀ = param(zeros(Float32, D_out))
-
+   state       = State(D_encoding, D_decoding, D_out)
    listen      = Encoder(D_in, D_encoding)
    attention_ϕ = MLP(D_decoding, D_attention)
    attention_ψ = MLP(D_encoding, D_attention)
    spell       = Decoder(D_encoding + D_decoding + D_out, D_decoding)
    infer       = CharacterDistribution(D_encoding + D_decoding, D_out)
-
-   las = LAS(State(context₀, decoding₀, prediction₀), listen, attention_ϕ, attention_ψ, spell, infer) |> gpu
+   las = LAS(state, listen, attention_ϕ, attention_ψ, spell, infer) |> gpu
    return las
 end
 
-function (m::LAS{V})(xs::AbstractVector{<:AbstractVector})::Vector{V} where V
+function (m::LAS{T})(xs::AbstractVector{<:AbstractVector})::Vector{T} where T
    # compute input encoding
    hs = m.listen(xs)
    # convert sequence of T D-dimensional vectors hs to D×T–matrix
@@ -174,7 +181,7 @@ function (m::LAS{V})(xs::AbstractVector{<:AbstractVector})::Vector{V} where V
    # precompute ψ(H)
    ψH = m.attention_ψ(H)
    # initialize prediction
-   ŷs = Vector{V}(undef, length(xs))
+   ŷs = Vector{T}(undef, length(xs))
    for t ∈ eachindex(ŷs)
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
@@ -185,14 +192,14 @@ function (m::LAS{V})(xs::AbstractVector{<:AbstractVector})::Vector{V} where V
       m.state.prediction = m.infer([m.state.decoding; m.state.context])
       ŷs[t] = m.state.prediction
    end
-   reset!(m::LAS)
+   reset!(m)
    return ŷs
 end
 
 function Flux.reset!(m::LAS)
+   reset!(m.state)
    reset!(m.listen)
    reset!(m.spell)
-   reset!(m.state)
    return nothing
 end
 
