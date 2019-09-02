@@ -278,7 +278,7 @@ function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:Abstrac
    return prediction
 end
 
-function predict(X::AbstractMatrix, y)::AbstractVector{<:AbstractString}
+function predict(X::AbstractMatrix)::AbstractVector{<:AbstractString}
    ŷs = las(pad(X), size(X,2))
    prediction = onecold.(ŷs, (PHONEMES,))
    return prediction
