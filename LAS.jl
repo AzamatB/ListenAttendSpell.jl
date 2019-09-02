@@ -1,6 +1,6 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
 using Flux
-using Flux: flip, reset!, onehotbatch, throttle, train!, @treelike, @epochs
+using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
 using IterTools
 using JLD2
 using StatsBase
@@ -177,7 +177,7 @@ function (m::LAS{V})(xs::AbstractVector{<:AbstractVector}, T = length(xs))::Abst
    # compute input encoding
    hs = m.listen(xs)
    # convert sequence of T D-dimensional vectors hs to D×T–matrix
-   H = foldl(hcat, hs)
+   H = hcat(hs...) # foldl(hcat, hs)
    # precompute ψ(H)
    ψH = m.attention_ψ(H)
    # initialize prediction
@@ -227,11 +227,11 @@ Xs_train, ys_train,
 Xs_eval, ys_eval,
 Xs_val, ys_val,
 Xs_test, ys_test,
-PHN2IDX, PHN_IDCS =
+PHONEMES =
 let val_set_size = 32
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys PHN2IDX PHN_IDCS
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys _
    Xs_val, ys_val, Xs_test, ys_test = Xs[1:val_set_size], ys[1:val_set_size], Xs[(val_set_size+1):end], ys[(val_set_size+1):end]
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHN2IDX PHN_IDCS
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHONEMES
    eval_idcs = sample(eachindex(ys), val_set_size; replace=false)
    Xs_eval, ys_eval = Xs[eval_idcs], ys[eval_idcs]
    first(Xs), first(ys),
@@ -239,12 +239,12 @@ let val_set_size = 32
    Xs_eval, ys_eval,
    Xs_val, ys_val,
    Xs_test, ys_test,
-   PHN2IDX, PHN_IDCS
+   PHONEMES
 end
 
 
 const D_x = size(X,1)
-const D_y = length(PHN_IDCS)
+const D_y = length(PHONEMES)
 
 D_encoding = 128
 D_attention = 64 # attention dimension
@@ -270,6 +270,20 @@ function loss(X::AbstractMatrix, y)::Real
 end
 
 loss(xs_batch::AbstractVector{<:AbstractVecOrMat}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
+
+function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
+   T = length(xs)
+   ŷs = las(pad!(xs), T)
+   prediction = onecold.(ŷs, (PHONEMES,))
+   return prediction
+end
+
+function predict(X::AbstractMatrix, y)::AbstractVector{<:AbstractString}
+   ŷs = las(pad(X), size(X,2))
+   prediction = onecold.(ŷs, (PHONEMES,))
+   return prediction
+end
+
 
 show_loss_val() = @show(loss(Xs_val, ys_val))
 show_loss_eval() = @show(loss(Xs_eval, ys_eval))

@@ -6,12 +6,12 @@ using Base.Iterators
 using IterTools
 
 # make dictionary to map from phones to class numbers
-const PHN2IDX, PHN_IDCS = let
-   phonemes = split("h#	q	eh	dx	iy	r	ey	ix	tcl	sh	ow	z	s	hh	aw	m	t	er	l	w	aa	hv	ae	dcl	y	axr	d	kcl	k	ux	ng	gcl	g	ao	epi	ih	p	ay	v	n	f	jh	ax	en	oy	dh	pcl	ah	bcl	el	zh	uw	pau	b	uh	th	ax-h	em	ch	nx	eng")
-   phn_idcs = eachindex(phonemes)
+const PHONEMES, PHN2IDX = let
+   phonemes = split("h# q eh dx iy r ey ix tcl sh ow z s hh aw m t er l w aa hv ae dcl y axr d kcl k ux ng gcl g ao epi ih p ay v n f jh ax en oy dh pcl ah bcl el zh uw pau b uh th ax-h em ch nx eng")
+   phonemes = convert(Vector{String}, phonemes)
    phn2idx = Dict(phoneme => i for (i, phoneme) ∈ enumerate(phonemes))
    phn2idx["sil"] = phn2idx["h#"]
-   phn2idx, phn_idcs
+   phonemes, phn2idx
 end
 
 # make dictionary to perform class folding
@@ -116,7 +116,7 @@ function generate_data(dir_data::AbstractString, path_out::AbstractString; Δord
    ys = [y for (_, y) ∈ Xys]
 
    ispath(path_out) || mkpath(dirname(path_out))
-   JLD2.@save path_out Xs ys PHN2IDX PHN_IDCS
+   JLD2.@save path_out Xs ys PHONEMES
    return Xs, ys
 end
 
