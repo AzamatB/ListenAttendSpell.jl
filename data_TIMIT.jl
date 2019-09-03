@@ -105,7 +105,7 @@ function generate_data(dir_data::AbstractString, path_out::AbstractString; Δord
       phnfiles = (file for file ∈ files if !startswith(file, "SA") && endswith(file, ".PHN"))
       wavfiles = (file for file ∈ files if !startswith(file, "SA") && endswith(file, ".wav"))
 
-      map(wavfiles, phnfiles) do (wavfile, phnfile)
+      map(wavfiles, phnfiles) do wavfile, phnfile
          wavfilepath = joinpath(root, wavfile)
          phnfilepath = joinpath(root, phnfile)
          build_features(wavfilepath, phnfilepath, Δorder)

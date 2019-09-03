@@ -2,9 +2,9 @@
 using Flux
 using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
 using IterTools
-using Base.Iterators
 using JLD2
 using StatsBase
+import Base.Iterators
 # using CuArrays
 
 
@@ -230,9 +230,9 @@ Xs_val, ys_val,
 Xs_test, ys_test,
 PHONEMES =
 let val_set_size = 32
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys _
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys PHONEMES
    Xs_val, ys_val, Xs_test, ys_test = Xs[1:val_set_size], ys[1:val_set_size], Xs[(val_set_size+1):end], ys[(val_set_size+1):end]
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHONEMES
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
    eval_idcs = sample(eachindex(ys), val_set_size; replace=false)
    Xs_eval, ys_eval = Xs[eval_idcs], ys[eval_idcs]
    first(Xs), first(ys),
@@ -372,8 +372,6 @@ end
 
 levendist(seq₁::AbstractString, seq₂::AbstractString)::Int = levendist(collect(seq₁), collect(seq₂))
 
-function cer()
-end
-
-function wer()
-end
+per(source_phoneme, target_phoneme)::Real = levendist(source_phoneme, target_phoneme)/length(target_phoneme)
+cer(source_chars, target_chars)::Real = levendist(source_chars, target_chars)/length(target_chars)
+wer(source_words, target_words)::Real = levendist(source_words, target_words)/length(target_words)
