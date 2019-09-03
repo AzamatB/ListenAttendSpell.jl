@@ -2,6 +2,7 @@
 using Flux
 using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
 using IterTools
+using Base.Iterators
 using JLD2
 using StatsBase
 # using CuArrays
@@ -259,18 +260,19 @@ const las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_deco
 function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
    T = length(xs)
    ŷs = las(pad!(xs), T)
-   l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
+   l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
    return l
 end
 
 function loss(X::AbstractMatrix, y)::Real
    ŷs = las(pad(X), size(X,2))
-   l = -sum( ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
+   l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
    return l
 end
 
 loss(xs_batch::AbstractVector{<:AbstractVecOrMat}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
 
+# best path decoding
 function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
    T = length(xs)
    ŷs = las(pad!(xs), T)
@@ -309,11 +311,66 @@ end
 
 
 
-
-
 # beamsearch()
 
-using Levenstein
+
+
+"""
+   levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
+   levendist(seq₁::AbstractString, seq₂::AbstractString)::Int
+
+Levenshtein distance between sequences `seq₁` and `seq₂`.
+"""
+function levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
+   # ensure that length(seq₁) <= length(seq₂)
+   if length(seq₁) > length(seq₂)
+      seq₁, seq₂ = seq₂, seq₁
+   end
+   # ignore prefix common to both sequences
+   start = length(seq₁) + 1
+   for (i, (el₁, el₂)) ∈ enumerate(zip(seq₁, seq₂))
+      if el₁ != el₂
+         start = i
+         break
+      end
+   end
+   @views begin
+      seq₁, seq₂ = seq₁[start:end], seq₂[start:end]
+      # ignore suffix common to both sequences
+      lenseq₁ = length(seq₁)
+      offset = lenseq₁
+      for (i, el₁, el₂) ∈ zip(0:lenseq₁, Iterators.reverse(seq₁), Iterators.reverse(seq₂))
+         if el₁ != el₂
+            offset = i
+            break
+         end
+      end
+      seq₁, seq₂ = seq₁[1:(end-offset)], seq₂[1:(end-offset)]
+   end
+   lenseq₁ = length(seq₁)
+   dist = length(seq₂)
+   # if all of shorter sequence matches prefix and/or suffix of longer sequence, then Levenshtein
+   # distance is just the delete cost of the additional characters present in longer sequence
+   lenseq₁ == 0 && return dist
+
+   costs = collect(eachindex(seq₂))
+   @inbounds for (i, el₁) ∈ zip(0:(lenseq₁-1), seq₁)
+      left = dist = i
+      for (j, el₂) ∈ enumerate(seq₂)
+         # cost on diagonal (substitution)
+         above, dist, left = dist, left, costs[j]
+         if el₁ != el₂
+            # minimum of substitution, insertion and deletion costs
+            dist = 1 + min(dist, left, above)
+         end
+         costs[j] = dist
+      end
+      # @show costs, dist
+   end
+   return dist
+end
+
+levendist(seq₁::AbstractString, seq₂::AbstractString)::Int = levendist(collect(seq₁), collect(seq₂))
 
 function cer()
 end
