@@ -1,6 +1,6 @@
 using BenchmarkTools
 using Test
-
+using Traceur
 # tests for levenshtein distance
 using Random
 using REPL

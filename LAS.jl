@@ -29,7 +29,7 @@ BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), 
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
-function restack(xs::VV)::VV where {VV <: AbstractVector{<:AbstractVector}}
+function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVector}
    T = length(xs)
    return vcat.(xs[1:2:T], xs[2:2:T])
 end
@@ -183,7 +183,7 @@ function (m::LAS{V})(xs::AbstractVector{<:AbstractVector}, T = length(xs))::Abst
    ψH = m.attention_ψ(H)
    # initialize prediction
    ŷs = similar(xs, V, T)
-   for t ∈ eachindex(ŷs)
+   @inbounds for t ∈ eachindex(ŷs)
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
       # compute attention context
@@ -204,7 +204,7 @@ function Flux.reset!(m::LAS)
    return nothing
 end
 
-function pad!(xs::VV; multiplicity::Integer=8)::VV where {VV <: AbstractVector{<:AbstractVector}}
+function pad!(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:AbstractVector}
    T = length(xs)
    Δ = ceil(Int, T / multiplicity)multiplicity - T
    el_min = minimum(minimum(xs))
