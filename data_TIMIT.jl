@@ -95,11 +95,11 @@ function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorde
 end
 
 """
-   generate_data(dir_data::AbstractString, path_out::AbstractString)
+   build_dataset(dir_data::AbstractString, path_out::AbstractString)
 
 Extracts data from files in `dir_data`, builds features, concatenates produced outputs and saves results as `path_out`.
 """
-function generate_data(dir_data::AbstractString, path_out::AbstractString; Δorder::Integer=2)
+function build_dataset(dir_data::AbstractString, path_out::AbstractString; Δorder::Integer=2)
    Xys = mapreduce(vcat, walkdir(dir_data)) do (root, _, files)
       print("$(root)\r")
       phnfiles = (file for file ∈ files if !startswith(file, "SA") && endswith(file, ".PHN"))
@@ -127,5 +127,5 @@ const PATH_OUT_TEST   = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_t
 const DIR_DATA_TRAIN = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_wav/TRAIN"
 const PATH_OUT_TRAIN  = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld"
 
-@time generate_data(DIR_DATA_TEST, PATH_OUT_TEST)
-@time generate_data(DIR_DATA_TRAIN, PATH_OUT_TRAIN)
+@time build_dataset(DIR_DATA_TEST, PATH_OUT_TEST)
+@time build_dataset(DIR_DATA_TRAIN, PATH_OUT_TRAIN)
