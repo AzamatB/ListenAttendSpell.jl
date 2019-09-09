@@ -1,5 +1,6 @@
 using LinearAlgebra
 using StaticArrays
+
 # node of a tree structured stack
 mutable struct TSS{V <: AbstractVector{Int}}
 	id::Int
@@ -56,28 +57,13 @@ end
 	return expr
 end
 
-
-ŷs = [[0.1, 0.2, 0.3, 0.4, 0.5],
-      [0.5, 0.4, 0.3, 0.2, 0.1],
-      [0.1, 0.2, 0.3, 0.4, 0.5],
-      [0.5, 0.4, 0.3, 0.2, 0.1],
-      [0.1, 0.2, 0.3, 0.4, 0.5],
-      [0.5, 0.4, 0.3, 0.2, 0.1],
-      [0.1, 0.2, 0.3, 0.4, 0.5],
-      [0.5, 0.4, 0.3, 0.2, 0.1],
-      [0.1, 0.2, 0.3, 0.4, 0.5],
-      [0.5, 0.4, 0.3, 0.2, 0.1]]
-
-
-width = 32
-# beam search
 function beam_search(ŷs::AbstractVector{<:AbstractVector}, width::Integer)::Vector{Vector{Int}}
 	# alphabet length
 	D = length(first(ŷs))
 	# get integer initlen such that D^initlen >= beam width
 	initlen = max(ceil(Int, log(D, width)), 1)
 	# compute D^initlen number of candidate sequences and their corresponding scores
-	scores, sequences = getsequences(@SVector [Size(D)(ŷ) for ŷ ∈ ŷs[1:initlen]])
+	scores, sequences = getsequences(SVector(ntuple(i -> Size(D)(ŷs[i]), initlen)))
 	widthrng = 1:width
 	# find the width number of top scoring candidate sequences
 	topidxs = partialsortperm(scores, widthrng; rev=true)
@@ -85,7 +71,6 @@ function beam_search(ŷs::AbstractVector{<:AbstractVector}, width::Integer)::Ve
 	topsequences = sequences[topidxs]
 	max_length = length(ŷs)
 	# initialize beams with top candidate sequences
-	# beams = [ TSS(id, score, firstchars, max_length) for (id, (score, firstchars)) ∈ enumerate(zip(topscores, topsequences)) ]
 	beams = [ TSS(id, firstchars, max_length) for (id, (score, firstchars)) ∈ enumerate(zip(topscores, topsequences)) ]
 	# preallocate arrays before main loop
 	scores = Matrix{Float64}(undef, D, width)
@@ -153,3 +138,17 @@ function beam_search(ŷs::AbstractVector{<:AbstractVector}, width::Integer)::Ve
 
 	return predictions
 end
+
+
+ŷs = [[0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.5, 0.4, 0.3, 0.2, 0.1],
+      [0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.5, 0.4, 0.3, 0.2, 0.1],
+      [0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.5, 0.4, 0.3, 0.2, 0.1],
+      [0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.5, 0.4, 0.3, 0.2, 0.1],
+      [0.1, 0.2, 0.3, 0.4, 0.5],
+      [0.5, 0.4, 0.3, 0.2, 0.1]]
+width = 32
+beam_search(ŷs, width)
