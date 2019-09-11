@@ -1,13 +1,13 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
+# using CuArrays
 using Flux
 using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
 using IterTools
 using JLD2
 using StatsBase
 import Base.Iterators
-# using CuArrays
 
-
+# Bidirectional LSTM
 struct BLSTM{L,D}
    forward  :: L
    backward :: L
@@ -149,8 +149,8 @@ function Flux.reset!(s::State)
 end
 
 
-struct LAS{V, E, Dϕ, Dψ, L, C}
-   state       :: State{V} # current state of the model
+struct LAS{S, E, Dϕ, Dψ, L, C}
+   state       :: S   # current state of the model
    listen      :: E   # encoder function
    attention_ϕ :: Dϕ  # attention context function
    attention_ψ :: Dψ  # attention context function
@@ -174,7 +174,7 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS{V})(xs::AbstractVector{<:AbstractVector}, T = length(xs))::AbstractVector{V} where V
+function (m::LAS{S})(xs::AbstractVector{<:AbstractVector}, T = length(xs))::AbstractVector{V} where {V <: AbstractVector{<:Real}, S <: State{V}}
    # compute input encoding
    hs = m.listen(xs)
    # convert sequence of T D-dimensional vectors hs to D×T–matrix
@@ -204,116 +204,94 @@ function Flux.reset!(m::LAS)
    return nothing
 end
 
-function pad!(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:AbstractVector}
+function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:AbstractVector}
    T = length(xs)
-   Δ = ceil(Int, T / multiplicity)multiplicity - T
+   newlength = ceil(Int, T / multiplicity)multiplicity
    el_min = minimum(minimum(xs))
-   x = fill!(similar(first(xs)), el_min)
-   append!(xs, fill(x, Δ))
-   return xs |> gpu
-end
-
-function pad(X::AbstractMatrix; multiplicity::Integer=8)::AbstractVector{<:AbstractVector}
-   T = size(X,2)
-   Δ = ceil(Int, T / multiplicity)multiplicity - T
-   el_min = minimum(X)
-   X = [X fill(el_min, size(X,1), Δ)] |> gpu
-   xs = [x for x ∈ eachcol(X)]
+   x = gpu(fill!(similar(first(xs)), el_min))
+   xs = gpu.(xs)
+   resize!(xs, newlength)
+   xs[(T+1):end] .= (x,)
    return xs
 end
 
-# load data
-X, y,
-Xs_train, ys_train,
-Xs_eval, ys_eval,
-Xs_val, ys_val,
-Xs_test, ys_test,
-PHONEMES =
-let val_set_size = 32
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys PHONEMES
-   Xs_val, ys_val, Xs_test, ys_test = Xs[1:val_set_size], ys[1:val_set_size], Xs[(val_set_size+1):end], ys[(val_set_size+1):end]
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-   eval_idcs = sample(eachindex(ys), val_set_size; replace=false)
-   Xs_eval, ys_eval = Xs[eval_idcs], ys[eval_idcs]
-   first(Xs), first(ys),
-   Xs, ys,
+
+function main()
+   # load data
+   X, y,
+   Xs_train, ys_train,
    Xs_eval, ys_eval,
    Xs_val, ys_val,
-   Xs_test, ys_test,
-   PHONEMES
-end
+   # Xs_test, ys_test,
+   PHONEMES =
+   let val_set_size = 32
+      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys PHONEMES
+      Xs_val, ys_val, Xs_test, ys_test = Xs[1:val_set_size], ys[1:val_set_size], Xs[(val_set_size+1):end], ys[(val_set_size+1):end]
+      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
+      eval_idcs = sample(eachindex(ys), val_set_size; replace=false)
+      Xs_eval, ys_eval = Xs[eval_idcs], ys[eval_idcs]
+      first(Xs), first(ys),
+      Xs, ys,
+      Xs_eval, ys_eval,
+      Xs_val, ys_val,
+      # Xs_test, ys_test,
+      PHONEMES
+   end
 
 
-const D_x = size(X,1)
-const D_y = length(PHONEMES)
+   # const D_x = size(X,1)
+   D_x = length(first(X))
+   D_y = length(PHONEMES)
 
-D_encoding = 128
-D_attention = 64 # attention dimension
-D_decoding = 256
+   D_encoding = 128
+   D_attention = 64 # attention dimension
+   D_decoding = 256
 
-D_feed_forward = 128
-D_LSTM_speller = 512
-
-
-const las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
-
-function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
-   T = length(xs)
-   ŷs = las(pad!(xs), T)
-   l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
-   return l
-end
-
-function loss(X::AbstractMatrix, y)::Real
-   ŷs = las(pad(X), size(X,2))
-   l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
-   return l
-end
-
-loss(xs_batch::AbstractVector{<:AbstractVecOrMat}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
-
-# best path decoding
-function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
-   T = length(xs)
-   ŷs = las(pad!(xs), T)
-   prediction = onecold.(ŷs, (PHONEMES,))
-   return prediction
-end
-
-function predict(X::AbstractMatrix)::AbstractVector{<:AbstractString}
-   ŷs = las(pad(X), size(X,2))
-   prediction = onecold.(ŷs, (PHONEMES,))
-   return prediction
-end
+   D_feed_forward = 128
+   D_LSTM_speller = 512
 
 
-show_loss_val() = @show(loss(Xs_val, ys_val))
-show_loss_eval() = @show(loss(Xs_eval, ys_eval))
+   las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
-@time las(X)
-@time @show loss(Xs_val, ys_val)
-@time @show loss(Xs_eval, ys_eval)
+   function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
+      T = length(xs)
+      ŷs = las(pad(xs), T)
+      l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
+      return l
+   end
 
-θ = params(las)
-optimizer = ADAM()
-data = zip(Xs_train, ys_train)
+   loss(xs_batch::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
 
-@time @epochs 10 begin
-   @time train!(loss, θ, data, optimizer;
-      cb = throttle(show_loss_eval, 60))
-   loss_val = loss(X_val, Y_val)
-   @show loss_val
-   if loss_val < loss_val_saved
-      loss_val_saved = loss_val
-      @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" model optimiser
+   # best path decoding
+   function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
+      T = length(xs)
+      ŷs = las(pad(xs), T)
+      prediction = onecold.(ŷs, (PHONEMES,))
+      return prediction
+   end
+
+
+   show_loss_val() = @show(loss(Xs_val, ys_val))
+   show_loss_eval() = @show(loss(Xs_eval, ys_eval))
+
+   @time predict(X)
+   @btime @show loss(Xs_val, ys_val)
+   @time @show loss(Xs_eval, ys_eval)
+
+   θ = params(las)
+   optimizer = ADAM()
+   data = zip(Xs_train, ys_train)
+
+   @time @epochs 3 begin
+      @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 60))
+      loss_val = loss(X_val, Y_val)
+      @show loss_val
+      if loss_val < loss_val_saved
+         loss_val_saved = loss_val
+         @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" model optimiser
+      end
    end
 end
-
-
-
-# beamsearch()
-
-
 
 """
    levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int

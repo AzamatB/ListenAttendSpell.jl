@@ -40,15 +40,16 @@ end
 		n = 1
 	end
 
-	indentation = "   "^N
+	indentation = "   "
+	N_indentations = indentation^N
 	strloop = string(
 		"@inbounds ", # optional optimization
-		prod(k -> "   "^(k-1) * "for (i$k, p$k) in enumerate(ps[$k])\n", 1:N),
-		indentation, "sequences[n] = (", mapreduce(k -> "i$k", (ls, rs) -> ls * ", " * rs, 1:N), ")\n",
-		indentation, "scores[n] = ", mapreduce(k -> "p$k", (ls, rs) -> ls * " * " * rs, 1:N), "\n",
-		indentation, "n += 1\n",
-		prod(k -> "   "^k * "end\n", (N-1):-1:0)
-	)
+		ntuple(k -> indentation^(k-1) * "for (i$k, p$k) in enumerate(ps[$k])\n", N)...,
+		N_indentations, "sequences[n] = (", ntuple(k -> "i$k, ", N)..., ")\n",
+		N_indentations, "scores[n] = ", mapreduce(k -> "p$k", (ls, rs) -> ls * " * " * rs, 1:N), "\n",
+		N_indentations, "n += 1\n",
+		ntuple(k -> indentation^(N - k) * "end\n", N)...)
+
 	# loop = Meta.quot(strloop)
 	loop = Meta.parse(strloop)
 
@@ -81,7 +82,6 @@ function beam_search(ŷs::AbstractVector{<:AbstractVector}, width::Integer)::Ve
 	@views ŷs = ŷs[(initlen+1):end]
 	availablepairs = Vector{NTuple{2,Int}}(undef, width)
 
-	# @inbounds for ŷ ∈ ŷs
 	for ŷ ∈ ŷs
 		# compute the scores for all candidate sequences
 		mul!(scores, ŷ, topscores')
@@ -109,7 +109,6 @@ function beam_search(ŷs::AbstractVector{<:AbstractVector}, width::Integer)::Ve
 			end
 		end
 		@views unassignedbeams = beams[unassigned]
-		# @inbounds for (i, beam) ∈ enumerate(unassignedbeams)
 		for (beam, (beamid, char)) ∈ zip(unassignedbeams, availablepairs)
 			parentbeam = beams[beamid]
 			parent_id = parentbeam.id
@@ -119,7 +118,6 @@ function beam_search(ŷs::AbstractVector{<:AbstractVector}, width::Integer)::Ve
 	end
 
 	predictions = Vector{Vector{Int}}(undef, width)
-	# @inbounds for (i, beam) ∈ enumerate(beams)
 	for (i, beam) ∈ enumerate(beams)
 		prediction = Vector{Int}(undef, max_length)
 		Δ = max_length
@@ -150,5 +148,13 @@ ŷs = [[0.1, 0.2, 0.3, 0.4, 0.5],
       [0.5, 0.4, 0.3, 0.2, 0.1],
       [0.1, 0.2, 0.3, 0.4, 0.5],
       [0.5, 0.4, 0.3, 0.2, 0.1]]
-width = 32
-beam_search(ŷs, width)
+width = 3
+
+predictions = beam_search(ŷs, width)
+
+wan = ones(Int, length(first(predictions)))
+
+paths = hcat((predictions .- (wan,))...)
+
+
+truepaths = hcat([4, 0, 4, 0, 4, 0, 4, 0, 4, 0], [4, 0, 4, 0, 4, 0, 4, 0, 4, 1], [4, 0, 4, 0, 4, 0, 4, 0, 3, 0])

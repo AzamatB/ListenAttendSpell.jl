@@ -1,3 +1,4 @@
+# using CuArrays
 using WAV
 using MFCC
 using Flux: onehotbatch
@@ -86,9 +87,10 @@ function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorde
    mfccs = mfccs[idcs_to_keep,:]
    # compute filterbank derivates, fitted over 2 consecutive frames
    Δmfccs = (Δmfcc for Δmfcc ∈ take(iterated(x -> deltas(x, 2), mfccs), Δorder))
-   features = mapreduce(x -> x', vcat, (mfccs, Δmfccs...))
+   featuremat = mapreduce(x -> x', vcat, (mfccs, Δmfccs...))
    # convert from double precision to single precision for Flux
-   features = convert(Matrix{Float32}, features)
+   featuremat = convert(Matrix{Float32}, featuremat)
+   features = [featuremat[:,j] for j ∈ axes(featuremat,2)]
    # generate class numbers, there are 61 total classes, but only 39 are used after folding
    target = [PHN2IDX[label] for label ∈ label_sequence]
    return (features, target)
@@ -97,7 +99,7 @@ end
 """
    build_dataset(dir_data::AbstractString, path_out::AbstractString)
 
-Extracts data from files in `dir_data`, builds features, concatenates produced outputs and saves results as `path_out`.
+Extracts data from files in `dir_data`, builds featuremat, concatenates produced outputs and saves results as `path_out`.
 """
 function build_dataset(dir_data::AbstractString, path_out::AbstractString; Δorder::Integer=2)
    Xys = mapreduce(vcat, walkdir(dir_data)) do (root, _, files)
