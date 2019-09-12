@@ -216,6 +216,47 @@ function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:A
 end
 
 
+function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
+   sortingidxs = sortperm(Xs; by=length)
+   Xs = Xs[sortingidxs]
+   ys = ys[sortingidxs]
+
+   bsm1 = batch_size - 1
+   lastidxs = batch_size:batch_size:length(Xs)
+   xs_batches = [ batch!(Xs[(i - bsm1):i], multiplicity) for i ∈ lastidxs ]
+   ys_batches = [ ys[(i - bsm1):i] for i ∈ lastidxs ]
+
+   lenbatches = length(xs_batches)
+   lastidx = last(lastidxs)
+   if lastidx != length(Xs)
+      resize!(xs_batches, lenbatches + 1)
+      resize!(ys_batches, lenbatches + 1)
+      xs_batches[end] = batch!(Xs[(lastidx+1):end])
+      ys_batches[end] = ys[(lastidx+1):end]
+   end
+   return xs_batches, ys_batches
+end
+
+function batch!(Xs, multiplicity::Integer = 8)::Vector{<:AbstractMatrix}
+   # Xs must be an iterable, whose each element is a vector of vectors,
+   # and dimensionality of all element vectors must be the same
+   # find the length of the longest sequence
+   maxT = maximum(length, Xs)
+   # find the smallest multiple of `multiplicity` that is no less than `maxT`
+   newT = ceil(Int, maxT / multiplicity)multiplicity
+   # resize each sequence `xs` to the size `newT` paddding with vector filled with smallest values
+   for xs ∈ Xs
+      T = length(xs)
+      el_min = minimum(minimum(xs))
+      x = fill!(similar(first(xs)), el_min)
+      resize!(xs, newT)
+      xs[(T+1):end] .= (x,)
+   end
+   # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
+   return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
+end
+
+
 function main()
    # load data
    X, y,
@@ -224,14 +265,21 @@ function main()
    Xs_val, ys_val,
    # Xs_test, ys_test,
    PHONEMES =
-   let val_set_size = 32
-      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys PHONEMES
-      Xs_val, ys_val, Xs_test, ys_test = Xs[1:val_set_size], ys[1:val_set_size], Xs[(val_set_size+1):end], ys[(val_set_size+1):end]
-      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-      eval_idcs = sample(eachindex(ys), val_set_size; replace=false)
-      Xs_eval, ys_eval = Xs[eval_idcs], ys[eval_idcs]
-      first(Xs), first(ys),
-      Xs, ys,
+   # let batch_size = 128, val_set_size = 32
+   let batch_size = 3, val_set_size = 5
+      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+      Xs_val, ys_val = batch!(Xs[1:val_set_size]), ys[1:val_set_size]
+      Xs_test, ys_test = build_batches!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
+
+      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHONEMES
+      X, y = first(Xs), first(ys)
+      Xs_train, ys_train = build_batches!(Xs, ys, batch_size)
+
+      eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
+      Xs_eval, ys_eval = batch!(Xs[eval_idxs]), ys[eval_idxs]
+
+      X, y,
+      Xs_train, ys_train,
       Xs_eval, ys_eval,
       Xs_val, ys_val,
       # Xs_test, ys_test,
@@ -275,7 +323,7 @@ function main()
    show_loss_eval() = @show(loss(Xs_eval, ys_eval))
 
    @time predict(X)
-   @btime @show loss(Xs_val, ys_val)
+   @time @show loss(Xs_val, ys_val)
    @time @show loss(Xs_eval, ys_eval)
 
    θ = params(las)
@@ -283,7 +331,7 @@ function main()
    data = zip(Xs_train, ys_train)
 
    @time @epochs 3 begin
-      @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 60))
+      @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 600))
       loss_val = loss(X_val, Y_val)
       @show loss_val
       if loss_val < loss_val_saved
@@ -292,6 +340,8 @@ function main()
       end
    end
 end
+
+main()
 
 """
    levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int

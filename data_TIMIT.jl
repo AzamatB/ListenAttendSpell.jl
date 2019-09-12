@@ -82,9 +82,9 @@ function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorde
       label_sequence[i] = label
    end
    # get rid of the frames that were labeld as "q"
-   idcs_to_keep = filter(i -> label_sequence[i] != "q", eachindex(label_sequence))
-   label_sequence = label_sequence[idcs_to_keep]
-   mfccs = mfccs[idcs_to_keep,:]
+   idxs_to_keep = filter(i -> label_sequence[i] != "q", eachindex(label_sequence))
+   label_sequence = label_sequence[idxs_to_keep]
+   mfccs = mfccs[idxs_to_keep,:]
    # compute filterbank derivates, fitted over 2 consecutive frames
    Δmfccs = (Δmfcc for Δmfcc ∈ take(iterated(x -> deltas(x, 2), mfccs), Δorder))
    featuremat = mapreduce(x -> x', vcat, (mfccs, Δmfccs...))
