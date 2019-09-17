@@ -1,11 +1,13 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
-# using CuArrays
 using Flux
 using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
 using IterTools
+using LinearAlgebra
 using JLD2
 using StatsBase
 import Base.Iterators
+# using CuArrays
+# CuArrays.allowscalar(false)
 
 # Bidirectional LSTM
 struct BLSTM{L,D}
@@ -25,11 +27,11 @@ end
 
 BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), D_out)
 
-(m::BLSTM)(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector} = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
+(m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
-function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVector}
+function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVecOrMat}
    T = length(xs)
    return vcat.(xs[1:2:T], xs[2:2:T])
 end
@@ -122,22 +124,22 @@ end
 CharacterDistribution(D_in::Integer, D_out::Integer; applylog::Bool=true) = Chain(Dense(D_in, D_out), applylog ? logsoftmax : softmax)
 
 
-mutable struct State{V <: AbstractVector{<:Real}}
-   context     :: V   # last attention context
-   decoding    :: V   # last decoder state
-   prediction  :: V   # last prediction
+mutable struct State{M <: AbstractMatrix{<:Real}}
+   context     :: M   # last attention context
+   decoding    :: M   # last decoder state
+   prediction  :: M   # last prediction
    # reset values
-   context₀    :: V
-   decoding₀   :: V
-   prediction₀ :: V
+   context₀    :: M
+   decoding₀   :: M
+   prediction₀ :: M
 end
 
 @treelike State
 
 function State(D_c::Integer, D_d::Integer, D_p::Integer)
-   context₀    = param(zeros(Float32, D_c))
-   decoding₀   = param(zeros(Float32, D_d))
-   prediction₀ = param(zeros(Float32, D_p))
+   context₀    = param(zeros(Float32, D_c, 1))
+   decoding₀   = param(zeros(Float32, D_d, 1))
+   prediction₀ = param(zeros(Float32, D_p, 1))
    return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀)
 end
 
@@ -149,8 +151,8 @@ function Flux.reset!(s::State)
 end
 
 
-struct LAS{S, E, Dϕ, Dψ, L, C}
-   state       :: S   # current state of the model
+struct LAS{V, E, Dϕ, Dψ, L, C}
+   state       :: State{V} # current state of the model
    listen      :: E   # encoder function
    attention_ϕ :: Dϕ  # attention context function
    attention_ψ :: Dψ  # attention context function
@@ -174,28 +176,45 @@ function LAS(D_in::Integer, D_out::Integer;
    return las
 end
 
-function (m::LAS{S})(xs::AbstractVector{<:AbstractVector}, T = length(xs))::AbstractVector{V} where {V <: AbstractVector{<:Real}, S <: State{V}}
+function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(xs))::AbstractArray{<:Real,3} where {M <: AbstractMatrix{<:Real}}
+   batch_size = size(first(xs), 2)
    # compute input encoding
    hs = m.listen(xs)
-   # convert sequence of T D-dimensional vectors hs to D×T–matrix
-   H = hcat(hs...) # foldl(hcat, hs)
+   # concatenate sequence of D×N matrices into ssingle D×N×T 3-dimdimensional array
+   Hs = cat(hs...; dims=3)
    # precompute ψ(H)
-   ψH = m.attention_ψ(H)
+   ψHs = m.attention_ψ.(hs)
    # initialize prediction
-   ŷs = similar(xs, V, T)
-   @inbounds for t ∈ eachindex(ŷs)
-      # compute decoder state
-      m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
+   ŷs = similar(xs, M, maxT)
+   # compute inital decoder state
+   O = zeros(Bool, size(m.state.decoding, 1), batch_size)
+   m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
+   @inbounds for i ∈ eachindex(ŷs)
+      # compute ϕ(sᵢ)
+      ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
       # compute attention context
-      αs = softmax(ψH'm.attention_ϕ(m.state.decoding))
-      m.state.context = sum( α * h for (α, h) ∈ zip(αs, eachcol(H)) )
+      Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
+      αᵢs = softmax(vcat(Eᵢs'...))
+      # compute attention context, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
+      m.state.context = reshape(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3), size.(Ref(Hs), (1, 2)))
       # predict probability distribution over character alphabet
       m.state.prediction = m.infer([m.state.decoding; m.state.context])
-      ŷs[t] = m.state.prediction
+      ŷs[i] = m.state.prediction
+      # compute decoder state
+      m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
    end
+   # concatenate sequence of D×N pprediction matrices into ssingle D×T×N 3-dimdimensional array
+   Ŷs = cat((ŷ -> reshape(ŷ, size(ŷ,1), 1, :)).(ŷs)...; dims=2)
    reset!(m)
-   return ŷs
+   return Ŷs
 end
+
+function (m::LAS)(xs::AbstractVector{<:AbstractVector})::AbstractArray{<:Real,3}
+   T = length(xs)
+   xs = reshape.(pad(xs), :,1)
+   return las(xs, T)
+end
+
 
 function Flux.reset!(m::LAS)
    reset!(m.state)
@@ -216,32 +235,9 @@ function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:A
 end
 
 
-function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
-   sortingidxs = sortperm(Xs; by=length)
-   Xs = Xs[sortingidxs]
-   ys = ys[sortingidxs]
-
-   bsm1 = batch_size - 1
-   lastidxs = batch_size:batch_size:length(Xs)
-   xs_batches = [ batch!(Xs[(i - bsm1):i], multiplicity) for i ∈ lastidxs ]
-   ys_batches = [ ys[(i - bsm1):i] for i ∈ lastidxs ]
-
-   lenbatches = length(xs_batches)
-   lastidx = last(lastidxs)
-   if lastidx != length(Xs)
-      resize!(xs_batches, lenbatches + 1)
-      resize!(ys_batches, lenbatches + 1)
-      xs_batches[end] = batch!(Xs[(lastidx+1):end])
-      ys_batches[end] = ys[(lastidx+1):end]
-   end
-   return xs_batches, ys_batches
-end
-
-function batch!(Xs, multiplicity::Integer = 8)::Vector{<:AbstractMatrix}
+function batch!(Xs, maxT::Integer = maximum(length, Xs), multiplicity::Integer = 8)::Vector{<:AbstractMatrix}
    # Xs must be an iterable, whose each element is a vector of vectors,
    # and dimensionality of all element vectors must be the same
-   # find the length of the longest sequence
-   maxT = maximum(length, Xs)
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
    newT = ceil(Int, maxT / multiplicity)multiplicity
    # resize each sequence `xs` to the size `newT` paddding with vector filled with smallest values
@@ -253,93 +249,115 @@ function batch!(Xs, multiplicity::Integer = 8)::Vector{<:AbstractMatrix}
       xs[(T+1):end] .= (x,)
    end
    # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
-   return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
+   return [hcat(getindex.(Xs, t)...) |> gpu for t ∈ 1:newT]
 end
 
+function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
+   sortingidxs = sortperm(Xs; by=length)
+   Xs = Xs[sortingidxs]
+   ys = ys[sortingidxs]
 
-function main()
-   # load data
+   lengthdata = length(Xs)
+   firstidxs = 1:batch_size:lengthdata
+   lastidxs = collect(firstidxs .+ (batch_size - 1))
+   lastidxs[end] = min(lengthdata, lastidxs[end])
+   maxTs = length.(Xs[lastidxs])
+
+   xs_batches = [ batch!(Xs[firstidx:lastidx], maxT, multiplicity) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   ys_batches = [ ys[firstidx:lastidx] for (firstidx, lastidx) ∈ zip(firstidxs, lastidxs) ]
+
+   return xs_batches, ys_batches, maxTs
+end
+
+# function main()
+# load data
+X, y,
+Xs_train, ys_train, maxTs_train,
+Xs_eval, ys_eval, maxT_eval,
+Xs_val, ys_val, maxT_val,
+# Xs_test, ys_test, maxTs_test,
+PHONEMES =
+# let batch_size = 924, val_set_size = 32
+let batch_size = 80, val_set_size = 32
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+
+   ys_val = ys[1:val_set_size]
+   maxT_val = maximum(length, ys_val)
+   Xs_val = batch!(Xs[1:val_set_size], maxT_val)
+
+   Xs_test, ys_test, maxTs_test = build_batches!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
+
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHONEMES
+   X, y = first(Xs), first(ys)
+   Xs_train, ys_train, maxTs_train = build_batches!(Xs, ys, batch_size)
+
+   eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
+   ys_eval = ys[eval_idxs]
+   maxT_eval = maximum(length, ys_eval)
+   Xs_eval = batch!(Xs[eval_idxs], maxT_eval)
+
    X, y,
-   Xs_train, ys_train,
-   Xs_eval, ys_eval,
-   Xs_val, ys_val,
-   # Xs_test, ys_test,
-   PHONEMES =
-   # let batch_size = 128, val_set_size = 32
-   let batch_size = 3, val_set_size = 5
-      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
-      Xs_val, ys_val = batch!(Xs[1:val_set_size]), ys[1:val_set_size]
-      Xs_test, ys_test = build_batches!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
-
-      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHONEMES
-      X, y = first(Xs), first(ys)
-      Xs_train, ys_train = build_batches!(Xs, ys, batch_size)
-
-      eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
-      Xs_eval, ys_eval = batch!(Xs[eval_idxs]), ys[eval_idxs]
-
-      X, y,
-      Xs_train, ys_train,
-      Xs_eval, ys_eval,
-      Xs_val, ys_val,
-      # Xs_test, ys_test,
-      PHONEMES
-   end
+   Xs_train, ys_train, maxTs_train,
+   Xs_eval, ys_eval, maxT_eval,
+   Xs_val, ys_val, maxT_val,
+   # Xs_test, ys_test, maxTs_test,
+   PHONEMES
+end
 
 
-   # const D_x = size(X,1)
-   D_x = length(first(X))
-   D_y = length(PHONEMES)
+# const D_x = size(X,1)
+D_x = length(first(X))
+D_y = length(PHONEMES)
 
-   D_encoding = 128
-   D_attention = 64 # attention dimension
-   D_decoding = 256
+D_encoding = 128
+D_attention = 64 # attention dimension
+D_decoding = 256
 
-   D_feed_forward = 128
-   D_LSTM_speller = 512
-
-
-   las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
-
-   function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
-      T = length(xs)
-      ŷs = las(pad(xs), T)
-      l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
-      return l
-   end
-
-   loss(xs_batch::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
-
-   # best path decoding
-   function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
-      T = length(xs)
-      ŷs = las(pad(xs), T)
-      prediction = onecold.(ŷs, (PHONEMES,))
-      return prediction
-   end
+D_feed_forward = 128
+D_LSTM_speller = 512
 
 
-   show_loss_val() = @show(loss(Xs_val, ys_val))
-   show_loss_eval() = @show(loss(Xs_eval, ys_eval))
+las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
-   @time predict(X)
-   @time @show loss(Xs_val, ys_val)
-   @time @show loss(Xs_eval, ys_eval)
+function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
+   T = length(xs)
+   ŷs = las(pad(xs), T)
+   l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
+   return l
+end
 
-   θ = params(las)
-   optimizer = ADAM()
-   data = zip(Xs_train, ys_train)
+loss(xs_batch::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
 
-   @time @epochs 3 begin
-      @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 600))
-      loss_val = loss(X_val, Y_val)
-      @show loss_val
-      if loss_val < loss_val_saved
-         loss_val_saved = loss_val
-         @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" model optimiser
-      end
+# best path decoding
+function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
+   T = length(xs)
+   ŷs = las(pad(xs), T)
+   prediction = onecold.(ŷs, (PHONEMES,))
+   return prediction
+end
+
+
+show_loss_val() = @show(loss(Xs_val, ys_val))
+show_loss_eval() = @show(loss(Xs_eval, ys_eval))
+
+@time predict(X)
+@time @show loss(Xs_val, ys_val)
+@time @show loss(Xs_eval, ys_eval)
+
+θ = params(las)
+optimizer = ADAM()
+data = zip(Xs_train, ys_train)
+
+@time @epochs 3 begin
+   @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 600))
+   loss_val = loss(X_val, Y_val)
+   @show loss_val
+   if loss_val < loss_val_saved
+      loss_val_saved = loss_val
+      @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" model optimiser
    end
 end
+# end
 
 main()
 
