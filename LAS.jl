@@ -1,4 +1,8 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
+
+# using CuArrays
+# CuArrays.allowscalar(false)
+
 using Flux
 using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
 using IterTools
@@ -6,8 +10,6 @@ using LinearAlgebra
 using JLD2
 using StatsBase
 import Base.Iterators
-# using CuArrays
-# CuArrays.allowscalar(false)
 
 # Bidirectional LSTM
 struct BLSTM{L,D}
@@ -187,7 +189,7 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    # initialize prediction
    ŷs = similar(xs, M, maxT)
    # compute inital decoder state
-   O = zeros(Bool, size(m.state.decoding, 1), batch_size)
+   O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
    m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
    @inbounds for i ∈ eachindex(ŷs)
       # compute ϕ(sᵢ)
@@ -196,7 +198,7 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
       αᵢs = softmax(vcat(Eᵢs'...))
       # compute attention context, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
-      m.state.context = reshape(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3), size.(Ref(Hs), (1, 2)))
+      m.state.context = dropdims(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3); dims=3)
       # predict probability distribution over character alphabet
       m.state.prediction = m.infer([m.state.decoding; m.state.context])
       ŷs[i] = m.state.prediction
@@ -249,7 +251,8 @@ function batch!(Xs, maxT::Integer = maximum(length, Xs), multiplicity::Integer =
       xs[(T+1):end] .= (x,)
    end
    # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
-   return [hcat(getindex.(Xs, t)...) |> gpu for t ∈ 1:newT]
+   return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
+   # return [hcat(getindex.(Xs, t)...) |> gpu for t ∈ 1:newT]
 end
 
 function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
@@ -277,8 +280,7 @@ Xs_eval, ys_eval, maxT_eval,
 Xs_val, ys_val, maxT_val,
 # Xs_test, ys_test, maxTs_test,
 PHONEMES =
-# let batch_size = 924, val_set_size = 32
-let batch_size = 80, val_set_size = 32
+let batch_size = 84, val_set_size = 32
    JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
    ys_val = ys[1:val_set_size]
@@ -319,14 +321,16 @@ D_LSTM_speller = 512
 
 las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
-function loss(xs::AbstractVector{<:AbstractVector}, y::AbstractVector{<:Integer})::Real
-   T = length(xs)
-   ŷs = las(pad(xs), T)
-   l = -sum(@inbounds ŷ[i] for (i, ŷ) ∈ zip(y, ŷs) )
+function loss(xs::AbstractVector{<:AbstractMatrix{<:Real}}, ys::AbstractVector{<:AbstractVector{<:Integer}}, maxT::Integer = length(xs))::Real
+   Ŷs = las(xs |> gpu, maxT)
+   x, y, z = size(Ŷs)
+   colsrng = range(0; step=x, length=y)
+   slicesrng = range(0; step=x*y, length=z)
+   # true_linindices = vcat([y .+ colsrng[eachindex(y)] .+ slicesrng[n] for (n, y) ∈ enumerate(ys)]...)
+   true_linindices = mapreduce((n, y) -> y .+ colsrng[eachindex(y)] .+ slicesrng[n], vcat, eachindex(ys), ys)
+   l = -sum(Ŷs[true_linindices])
    return l
 end
-
-loss(xs_batch::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys_batch::AbstractVector{<:AbstractVector})::Real = sum(loss.(xs_batch, ys_batch))
 
 # best path decoding
 function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
