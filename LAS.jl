@@ -193,7 +193,8 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
    @inbounds for i ∈ eachindex(ŷs)
       # compute ϕ(sᵢ)
-      ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
+      # ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
+      ϕSᵢᵀ = collect(m.attention_ϕ(m.state.decoding)')
       # compute attention context
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
       αᵢs = softmax(vcat(Eᵢs'...))
@@ -252,7 +253,6 @@ function batch!(Xs, maxT::Integer = maximum(length, Xs), multiplicity::Integer =
    end
    # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
    return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
-   # return [hcat(getindex.(Xs, t)...) |> gpu for t ∈ 1:newT]
 end
 
 function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
@@ -322,7 +322,7 @@ D_LSTM_speller = 512
 las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
 function loss(xs::AbstractVector{<:AbstractMatrix{<:Real}}, ys::AbstractVector{<:AbstractVector{<:Integer}}, maxT::Integer = length(xs))::Real
-   Ŷs = las(xs |> gpu, maxT)
+   Ŷs = las(gpu.(xs), maxT)
    x, y, z = size(Ŷs)
    colsrng = range(0; step=x, length=y)
    slicesrng = range(0; step=x*y, length=z)
@@ -334,7 +334,7 @@ end
 
 # best path decoding
 function predict(xs::AbstractVector{<:AbstractMatrix{<:Real}}, lengths::AbstractVector{<:Integer}, labels=PHONEMES)::AbstractVector{<:AbstractVector}
-   Ŷs = las(xs |> gpu, maxT)
+   Ŷs = las(gpu.(xs), maxT)
    predictions = [onecold(Ŷs[:, 1:len, n], labels) for (n, len) ∈ enumerate(lengths)]
    return predictions
 end
