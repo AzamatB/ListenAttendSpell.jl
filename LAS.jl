@@ -211,10 +211,11 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    return Ŷs
 end
 
-function (m::LAS)(xs::AbstractVector{<:AbstractVector})::AbstractArray{<:Real,3}
+function (m::LAS)(xs::AbstractVector{<:AbstractVector})::AbstractMatrix{<:Real}
    T = length(xs)
-   xs = reshape.(pad(xs), :,1)
-   return las(xs, T)
+   xs = gpu.(reshape.(pad(xs), :,1))
+   Ŷ = dropdims(las(xs, T); dims=3)
+   return Ŷ
 end
 
 
@@ -229,10 +230,9 @@ function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:A
    T = length(xs)
    newlength = ceil(Int, T / multiplicity)multiplicity
    el_min = minimum(minimum(xs))
-   x = gpu(fill!(similar(first(xs)), el_min))
-   xs = gpu.(xs)
-   resize!(xs, newlength)
-   xs[(T+1):end] .= (x,)
+   x = fill!(similar(first(xs)), el_min)
+   xs = resize!(copy(xs), newlength)
+   xs[(T+1):end] .= Ref(x)
    return xs
 end
 
@@ -333,10 +333,15 @@ function loss(xs::AbstractVector{<:AbstractMatrix{<:Real}}, ys::AbstractVector{<
 end
 
 # best path decoding
-function predict(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractString}
-   T = length(xs)
-   ŷs = las(pad(xs), T)
-   prediction = onecold.(ŷs, (PHONEMES,))
+function predict(xs::AbstractVector{<:AbstractMatrix{<:Real}}, lengths::AbstractVector{<:Integer}, labels=PHONEMES)::AbstractVector{<:AbstractVector}
+   Ŷs = las(xs |> gpu, maxT)
+   predictions = [onecold(Ŷs[:, 1:len, n], labels) for (n, len) ∈ enumerate(lengths)]
+   return predictions
+end
+
+function predict(xs::AbstractVector{<:AbstractVector{<:Real}}, labels=PHONEMES)::AbstractVector
+   Ŷ = las(xs)
+   prediction = onecold(Ŷ, labels)
    return prediction
 end
 
