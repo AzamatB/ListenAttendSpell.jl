@@ -78,7 +78,6 @@ end
 
 Encoder(D_in::Integer, D_out::Integer, hidden_sizes) = Encoder((D_in, hidden_sizes..., D_out))
 
-
 function MLP(layer_sizes, σs)
    layers = Tuple(Dense(D_in, D_out, σ) for ((D_in, D_out), σ) ∈ zip(partition(layer_sizes, 2, 1), σs))
    model = length(layers) == 1 ? first(layers) : Chain(layers...)
@@ -100,7 +99,6 @@ function MLP(D_in::Integer, D_out::Integer, σ::Function=identity; nlayers::Inte
    return MLP(D_in, D_out, σs)
 end
 
-
 function Decoder(layer_sizes)
    layers = ( LSTM(D_in, D_out) for (D_in, D_out) ∈ partition(layer_sizes, 2, 1) )
    model = Chain(layers...)
@@ -114,7 +112,6 @@ end
 
 Decoder(D_in::Integer, D_out::Integer, hidden_sizes) = Decoder((D_in, hidden_sizes..., D_out))
 
-
 function CharacterDistribution(D_in::Integer, D_out::Integer, σ::Function; nlayers::Integer, applylog::Bool=true)
    f = applylog ? logsoftmax : softmax
    layer_sizes = ceil.(Int, range(D_in, D_out; length=nlayers+1))
@@ -124,7 +121,6 @@ function CharacterDistribution(D_in::Integer, D_out::Integer, σ::Function; nlay
 end
 
 CharacterDistribution(D_in::Integer, D_out::Integer; applylog::Bool=true) = Chain(Dense(D_in, D_out), applylog ? logsoftmax : softmax)
-
 
 mutable struct State{M <: AbstractMatrix{<:Real}}
    context     :: M   # last attention context
@@ -151,7 +147,6 @@ function Flux.reset!(s::State)
    s.prediction = s.prediction₀
    return nothing
 end
-
 
 struct LAS{V, E, Dϕ, Dψ, L, C}
    state       :: State{V} # current state of the model
@@ -194,7 +189,7 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    @inbounds for i ∈ eachindex(ŷs)
       # compute ϕ(sᵢ)
       # ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
-      ϕSᵢᵀ = collect(m.attention_ϕ(m.state.decoding)')
+      ϕSᵢᵀ = collect(m.attention_ϕ(m.state.decoding)') # workaround for bug in encountered during training
       # compute attention context
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
       αᵢs = softmax(vcat(Eᵢs'...))
@@ -219,7 +214,6 @@ function (m::LAS)(xs::AbstractVector{<:AbstractVector})::AbstractMatrix{<:Real}
    return Ŷ
 end
 
-
 function Flux.reset!(m::LAS)
    reset!(m.state)
    reset!(m.listen)
@@ -236,7 +230,6 @@ function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:A
    xs[(T+1):end] .= Ref(x)
    return xs
 end
-
 
 function batch!(Xs, maxT::Integer = maximum(length, Xs), multiplicity::Integer = 8)::Vector{<:AbstractMatrix}
    # Xs must be an iterable, whose each element is a vector of vectors,
@@ -272,54 +265,19 @@ function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, 
    return xs_batches, ys_batches, maxTs
 end
 
-# function main()
-# load data
-X, y,
-Xs_train, ys_train, maxTs_train,
-Xs_eval, ys_eval, maxT_eval,
-Xs_val, ys_val, maxT_val,
-# Xs_test, ys_test, maxTs_test,
-PHONEMES =
-let batch_size = 84, val_set_size = 32
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
-
-   ys_val = ys[1:val_set_size]
-   maxT_val = maximum(length, ys_val)
-   Xs_val = batch!(Xs[1:val_set_size], maxT_val)
-
-   Xs_test, ys_test, maxTs_test = build_batches!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
-
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys PHONEMES
-   X, y = first(Xs), first(ys)
-   Xs_train, ys_train, maxTs_train = build_batches!(Xs, ys, batch_size)
-
-   eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
-   ys_eval = ys[eval_idxs]
-   maxT_eval = maximum(length, ys_eval)
-   Xs_eval = batch!(Xs[eval_idxs], maxT_eval)
-
-   X, y,
-   Xs_train, ys_train, maxTs_train,
-   Xs_eval, ys_eval, maxT_eval,
-   Xs_val, ys_val, maxT_val,
-   # Xs_test, ys_test, maxTs_test,
-   PHONEMES
+const las, PHONEMES = let
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
+   # D_x = length(first(X))
+   D_x = 39
+   D_y = length(PHONEMES)
+   D_encoding  = 128
+   D_attention = 64 # attention dimension
+   D_decoding  = 256
+   D_feed_forward = 128
+   D_LSTM_speller = 512
+   las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
+   las, PHONEMES
 end
-
-
-# const D_x = size(X,1)
-D_x = length(first(X))
-D_y = length(PHONEMES)
-
-D_encoding = 128
-D_attention = 64 # attention dimension
-D_decoding = 256
-
-D_feed_forward = 128
-D_LSTM_speller = 512
-
-
-las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
 
 function loss(xs::AbstractVector{<:AbstractMatrix{<:Real}}, ys::AbstractVector{<:AbstractVector{<:Integer}}, maxT::Integer = length(xs))::Real
    Ŷs = las(gpu.(xs), maxT)
@@ -346,27 +304,59 @@ function predict(xs::AbstractVector{<:AbstractVector{<:Real}}, labels=PHONEMES):
 end
 
 
-show_loss_val() = @show(loss(Xs_val, ys_val))
-show_loss_eval() = @show(loss(Xs_eval, ys_eval))
+function main()
+   # load data
+   X, y,
+   Xs_train, ys_train, maxTs_train,
+   # Xs_test, ys_test, maxTs_test,
+   Xs_eval, ys_eval, maxT_eval,
+   Xs_val, ys_val, maxT_val =
+   let batch_size = 168, val_set_size = 32
+      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
-@time predict(X)
-@time @show loss(Xs_val, ys_val)
-@time @show loss(Xs_eval, ys_eval)
+      ys_val = ys[1:val_set_size]
+      maxT_val = maximum(length, ys_val)
+      Xs_val = batch!(Xs[1:val_set_size], maxT_val)
 
-θ = params(las)
-optimizer = ADAM()
-data = zip(Xs_train, ys_train)
+      Xs_test, ys_test, maxTs_test = build_batches!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
 
-@time @epochs 3 begin
-   @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 600))
-   loss_val = loss(X_val, Y_val)
-   @show loss_val
-   if loss_val < loss_val_saved
-      loss_val_saved = loss_val
-      @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" model optimiser
+      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
+      X, y = first(Xs), first(ys)
+      Xs_train, ys_train, maxTs_train = build_batches!(Xs, ys, batch_size)
+
+      eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
+      ys_eval = ys[eval_idxs]
+      maxT_eval = maximum(length, ys_eval)
+      Xs_eval = batch!(Xs[eval_idxs], maxT_eval)
+
+      X, y,
+      Xs_train, ys_train, maxTs_train,
+      # Xs_test, ys_test, maxTs_test,
+      Xs_eval, ys_eval, maxT_eval,
+      Xs_val, ys_val, maxT_val
+   end
+
+   @time predict(X)
+   @time @show loss_val_saved = loss(Xs_val, ys_val)
+   @time @show loss(Xs_eval, ys_eval)
+
+   θ = params(las)
+   optimizer = ADAM()
+   data = zip(Xs_train, ys_train)
+
+   show_loss_val() = @show(loss(Xs_val, ys_val))
+   show_loss_eval() = @show(loss(Xs_eval, ys_eval))
+
+   @time @epochs 1 begin
+      @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 300))
+      loss_val = loss(Xs_val, ys_val)
+      @show loss_val
+      if loss_val < loss_val_saved
+         loss_val_saved = loss_val
+         @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" las optimizer
+      end
    end
 end
-# end
 
 main()
 
