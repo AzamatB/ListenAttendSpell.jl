@@ -189,7 +189,7 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    @inbounds for i ∈ eachindex(ŷs)
       # compute ϕ(sᵢ)
       # ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
-      ϕSᵢᵀ = collect(m.attention_ϕ(m.state.decoding)') # workaround for bug in encountered during training
+      ϕSᵢᵀ = permutedims(m.attention_ϕ(m.state.decoding)) # workaround for bug in encountered during training
       # compute attention context
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
       αᵢs = softmax(vcat(Eᵢs'...))
@@ -311,7 +311,7 @@ function main()
    # Xs_test, ys_test, maxTs_test,
    Xs_eval, ys_eval, maxT_eval,
    Xs_val, ys_val, maxT_val =
-   let batch_size = 168, val_set_size = 32
+   let batch_size = 154, val_set_size = 32
       JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
       ys_val = ys[1:val_set_size]
