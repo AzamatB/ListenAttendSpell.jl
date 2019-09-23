@@ -292,6 +292,7 @@ end
 
 # best path decoding
 function predict(xs::AbstractVector{<:AbstractMatrix{<:Real}}, lengths::AbstractVector{<:Integer}, labels=PHONEMES)::AbstractVector{<:AbstractVector}
+   maxT = maximum(lengths)
    Ŷs = las(gpu.(xs), maxT) |> cpu
    predictions = [onecold(Ŷs[:, 1:len, n], labels) for (n, len) ∈ enumerate(lengths)]
    return predictions
