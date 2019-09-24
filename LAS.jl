@@ -181,12 +181,12 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    Hs = cat(hs...; dims=3)
    # precompute ψ(H)
    ψHs = m.attention_ψ.(hs)
-   # initialize prediction
-   ŷs = similar(xs, M, maxT)
-   # compute inital decoder state
+   # compute inital decoder state for a batch
    O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
    m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
-   @inbounds for i ∈ eachindex(ŷs)
+   D_y = size(m.state.prediction, 1)
+
+   Ŷs = cat(map(1:maxT) do _
       # compute ϕ(sᵢ)
       # ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
       ϕSᵢᵀ = permutedims(m.attention_ϕ(m.state.decoding)) # workaround for bug in encountered during training
@@ -197,12 +197,12 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
       m.state.context = dropdims(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3); dims=3)
       # predict probability distribution over character alphabet
       m.state.prediction = m.infer([m.state.decoding; m.state.context])
-      ŷs[i] = m.state.prediction
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
-   end
-   # concatenate sequence of D×N pprediction matrices into ssingle D×T×N 3-dimdimensional array
-   Ŷs = cat((ŷ -> reshape(ŷ, size(ŷ,1), 1, :)).(ŷs)...; dims=2)
+      # reshape predicted matrix in order to concatenate along the 2nd dimension afterwards
+      reshape(m.state.prediction, D_y, 1, :)
+   end...; dims=2)
+
    reset!(m)
    return Ŷs
 end
