@@ -280,12 +280,14 @@ const las, PHONEMES = let
 end
 
 function loss(xs::AbstractVector{<:AbstractMatrix{<:Real}}, ys::AbstractVector{<:AbstractVector{<:Integer}}, maxT::Integer = length(xs))::Real
-   Ŷs = las(gpu.(xs), maxT)
+   Ŷs = las(xs, maxT)
    x, y, z = size(Ŷs)
    colsrng = range(0; step=x, length=y)
    slicesrng = range(0; step=x*y, length=z)
    # true_linindices = vcat([y .+ colsrng[eachindex(y)] .+ slicesrng[n] for (n, y) ∈ enumerate(ys)]...)
-   true_linindices = mapreduce((n, y) -> y .+ colsrng[eachindex(y)] .+ slicesrng[n], vcat, eachindex(ys), ys)
+   true_linindices = vcat(map(1:length(ys), ys) do n, y
+      y .+ colsrng[1:length(y)] .+ slicesrng[n]
+   end...)
    l = -sum(Ŷs[true_linindices])
    return l
 end
@@ -343,7 +345,7 @@ function main()
 
    θ = params(las)
    optimizer = ADAM()
-   data = zip(Xs_train, ys_train)
+   data = ((gpu.(xs), ys, maxT) for (xs, ys, maxT) ∈ zip(Xs_train, ys_train, maxTs_train))
 
    show_loss_val() = @show(loss(Xs_val, ys_val))
    show_loss_eval() = @show(loss(Xs_eval, ys_eval))
