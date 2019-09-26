@@ -1,5 +1,4 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
-
 # using CuArrays
 # CuArrays.allowscalar(false)
 
@@ -12,24 +11,22 @@ using StatsBase
 import Base.Iterators
 
 # Bidirectional LSTM
-struct BLSTM{L,D}
+struct BLSTM{L}
    forward  :: L
    backward :: L
-   dense    :: D
 end
 
 @treelike BLSTM
 
-function BLSTM(in::Integer, hidden::Integer, out::Integer, σ = identity)
+function BLSTM(in::Integer, out::Integer)
+   iseven(out) || throw("output dimension of the BLSTM layer must be even")
+   hidden = out ÷ 2
    forward  = LSTM(in, hidden)
    backward = LSTM(in, hidden)
-   dense    = Dense(2hidden, out, σ)
-   return BLSTM(forward, backward, dense)
+   return BLSTM(forward, backward)
 end
 
-BLSTM(D_in::Integer, D_out::Integer) = BLSTM(D_in, ceil(Int, (D_in + D_out)/2), D_out)
-
-(m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} = m.dense.(vcat.(m.forward.(xs), flip(m.backward, xs)))
+(m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} = vcat.(m.forward.(xs), flip(m.backward, xs))
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
@@ -39,47 +36,43 @@ function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVecOrMat}
 end
 
 """
-   PBLSTM(D_in::Integer, D_out::Integer)
+   PBLSTM(in::Integer, out::Integer)
 
 Pyramidal BLSTM is the same as BLSTM, with the addition that the outputs of BLSTM are concatenated at consecutive steps.
 """
-function PBLSTM(D_in::Integer, D_out::Integer)
-   iseven(D_out) || throw("output dimension of the pyramidal BLSTM layer must be even")
-   D_out_blstm = Int(D_out/2)
-   return Chain(BLSTM(D_in, D_out_blstm), restack)
+function PBLSTM(in::Integer, out::Integer)
+   (mod(out, 4) == 0) || throw("output dimension of the pyramidal BLSTM layer must be multiple of 4")
+   hidden = out ÷ 2
+   return Chain(BLSTM(in, hidden), restack)
 end
+
 
 """
    Encoder(layer_sizes)
-   Encoder(D_in::Integer, D_out::Integer; nlayers::Integer = 4)
-   Encoder(D_in::Integer, D_out::Integer, hidden_sizes)
+   Encoder(in::Integer, out::Integer; nlayers::Integer = 4)
+   Encoder(in::Integer, out::Integer, hidden_sizes)
 
 Encoder that consists of block of PBLSTMs. It accepts filter bank spectra as inputs and acts as acoustic model encoder.
 """
 function Encoder(layer_sizes)
    (length(layer_sizes) ≥ 3) || throw("number of layers of Encoder must be ≥ 2")
    layer_dims = Tuple(partition(layer_sizes, 2, 1))
-   layers = ( PBLSTM(D_in, D_out) for (D_in, D_out) ∈ layer_dims[1:end-1] )
-   model = Chain(layers..., BLSTM(layer_dims[end]...))
+   pblstm_layers = ( PBLSTM(in, out) for (in, out) ∈ layer_dims[2:end] )
+   model = Chain(BLSTM(layer_dims[1]...), pblstm_layers...)
    return model
 end
 
-function Encoder(D_in::Integer, D_out::Integer; nlayers::Integer = 4)
-   layer_sizes = range(D_in, D_out; length=nlayers+1)
-   layer_sizes = map(layer_sizes) do x
-      n = ceil(Int, x)
-      n = iseven(n) ? n : (n + 1)
-      return n
-   end
-   layer_sizes[1]   = D_in
-   layer_sizes[end] = D_out
+function Encoder(in::Integer, out::Integer; nlayers::Integer = 4)
+   layer_sizes = map(x -> 4ceil(Int, x/4), range(in, out; length=nlayers+1))
+   layer_sizes[1]   = in
+   layer_sizes[end] = out
    return Encoder(layer_sizes)
 end
 
-Encoder(D_in::Integer, D_out::Integer, hidden_sizes) = Encoder((D_in, hidden_sizes..., D_out))
+Encoder(in::Integer, out::Integer, hidden_sizes) = Encoder((in, hidden_sizes..., out))
 
 function MLP(layer_sizes, σs)
-   layers = Tuple(Dense(D_in, D_out, σ) for ((D_in, D_out), σ) ∈ zip(partition(layer_sizes, 2, 1), σs))
+   layers = Tuple(Dense(in, out, σ) for ((in, out), σ) ∈ zip(partition(layer_sizes, 2, 1), σs))
    model = length(layers) == 1 ? first(layers) : Chain(layers...)
    return model
 end
@@ -89,38 +82,38 @@ function MLP(layer_sizes, σ::Function)
    return MLP(layer_sizes, σs)
 end
 
-function MLP(D_in::Integer, D_out::Integer, σs)
-   layer_sizes = ceil.(Int, range(D_in, D_out; length=length(σs)+1))
+function MLP(in::Integer, out::Integer, σs)
+   layer_sizes = ceil.(Int, range(in, out; length=length(σs)+1))
    return MLP(layer_sizes, σs)
 end
 
-function MLP(D_in::Integer, D_out::Integer, σ::Function=identity; nlayers::Integer = 1)
+function MLP(in::Integer, out::Integer, σ::Function=identity; nlayers::Integer = 1)
    σs = ntuple(i -> σ, nlayers)
-   return MLP(D_in, D_out, σs)
+   return MLP(in, out, σs)
 end
 
 function Decoder(layer_sizes)
-   layers = ( LSTM(D_in, D_out) for (D_in, D_out) ∈ partition(layer_sizes, 2, 1) )
+   layers = ( LSTM(in, out) for (in, out) ∈ partition(layer_sizes, 2, 1) )
    model = Chain(layers...)
    return model
 end
 
-function Decoder(D_in::Integer, D_out::Integer; nlayers::Integer = 2)
-   layer_sizes = ceil.(Int, range(D_in, D_out; length=nlayers+1))
+function Decoder(in::Integer, out::Integer; nlayers::Integer = 2)
+   layer_sizes = ceil.(Int, range(in, out; length=nlayers+1))
    return Decoder(layer_sizes)
 end
 
-Decoder(D_in::Integer, D_out::Integer, hidden_sizes) = Decoder((D_in, hidden_sizes..., D_out))
+Decoder(in::Integer, out::Integer, hidden_sizes) = Decoder((in, hidden_sizes..., out))
 
-function CharacterDistribution(D_in::Integer, D_out::Integer, σ::Function; nlayers::Integer, applylog::Bool=true)
+function CharacterDistribution(in::Integer, out::Integer, σ::Function; nlayers::Integer, applylog::Bool=true)
    f = applylog ? logsoftmax : softmax
-   layer_sizes = ceil.(Int, range(D_in, D_out; length=nlayers+1))
+   layer_sizes = ceil.(Int, range(in, out; length=nlayers+1))
    layer_dims = Tuple(partition(layer_sizes, 2, 1))
-   layers = ( Dense(D_in, D_out, σ) for (D_in, D_out) ∈ layer_dims[1:end-1] )
+   layers = ( Dense(in, out, σ) for (in, out) ∈ layer_dims[1:end-1] )
    return Chain(layers..., Dense(layer_dims[end]...), f)
 end
 
-CharacterDistribution(D_in::Integer, D_out::Integer; applylog::Bool=true) = Chain(Dense(D_in, D_out), applylog ? logsoftmax : softmax)
+CharacterDistribution(in::Integer, out::Integer; applylog::Bool=true) = Chain(Dense(in, out), applylog ? logsoftmax : softmax)
 
 mutable struct State{M <: AbstractMatrix{<:Real}}
    context     :: M   # last attention context
@@ -134,10 +127,10 @@ end
 
 @treelike State
 
-function State(D_c::Integer, D_d::Integer, D_p::Integer)
-   context₀    = param(zeros(Float32, D_c, 1))
-   decoding₀   = param(zeros(Float32, D_d, 1))
-   prediction₀ = param(zeros(Float32, D_p, 1))
+function State(dim_c::Integer, dim_d::Integer, dim_p::Integer)
+   context₀    = param(zeros(Float32, dim_c, 1))
+   decoding₀   = param(zeros(Float32, dim_d, 1))
+   prediction₀ = param(zeros(Float32, dim_p, 1))
    return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀)
 end
 
@@ -159,16 +152,16 @@ end
 
 @treelike LAS
 
-function LAS(D_in::Integer, D_out::Integer;
-             D_encoding::Integer,
-             D_attention::Integer,
-             D_decoding::Integer)
-   state       = State(D_encoding, D_decoding, D_out)
-   listen      = Encoder(D_in, D_encoding)
-   attention_ϕ = MLP(D_decoding, D_attention)
-   attention_ψ = MLP(D_encoding, D_attention)
-   spell       = Decoder(D_encoding + D_decoding + D_out, D_decoding)
-   infer       = CharacterDistribution(D_encoding + D_decoding, D_out)
+function LAS(dim_in::Integer, dim_out::Integer;
+             dim_encoding::Integer,
+             dim_attention::Integer,
+             dim_decoding::Integer)
+   state       = State(dim_encoding, dim_decoding, dim_out)
+   listen      = Encoder(dim_in, dim_encoding)
+   attention_ϕ = MLP(dim_decoding, dim_attention)
+   attention_ψ = MLP(dim_encoding, dim_attention)
+   spell       = Decoder(dim_encoding + dim_decoding + dim_out, dim_decoding)
+   infer       = CharacterDistribution(dim_encoding + dim_decoding, dim_out)
    las = LAS(state, listen, attention_ϕ, attention_ψ, spell, infer) |> gpu
    return las
 end
@@ -184,7 +177,7 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
    # compute inital decoder state for a batch
    O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
    m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
-   D_y = size(m.state.prediction, 1)
+   dim_out = size(m.state.prediction, 1)
 
    Ŷs = cat(map(1:maxT) do _
       # compute ϕ(sᵢ)
@@ -200,7 +193,7 @@ function (m::LAS{M})(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = lengt
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
       # reshape predicted matrix in order to concatenate along the 2nd dimension afterwards
-      reshape(m.state.prediction, D_y, 1, :)
+      reshape(m.state.prediction, dim_out, 1, :)
    end...; dims=2)
 
    reset!(m)
@@ -267,15 +260,17 @@ end
 
 const las, PHONEMES = let
    JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
-   # D_x = length(first(X))
-   D_x = 39
-   D_y = length(PHONEMES)
-   D_encoding  = 128
-   D_attention = 64 # attention dimension
-   D_decoding  = 256
-   D_feed_forward = 128
-   D_LSTM_speller = 512
-   las = LAS(D_x, D_y; D_encoding=D_encoding, D_attention=D_attention, D_decoding=D_decoding)
+   # dim_in = length(first(X))
+   dim_in = 39
+   dim_out = length(PHONEMES)
+   dim_encoding  = 256
+   dim_attention = 512 # attention dimension
+   dim_decoding  = 512
+
+   dim_feed_forward = 128
+   dim_LSTM_speller = 512
+
+   las = LAS(dim_in, dim_out; dim_encoding=dim_encoding, dim_attention=dim_attention, dim_decoding=dim_decoding)
    las, PHONEMES
 end
 
@@ -314,7 +309,7 @@ function main()
    # Xs_test, ys_test, maxTs_test,
    Xs_eval, ys_eval, maxT_eval,
    Xs_val, ys_val, maxT_val =
-   let batch_size = 154, val_set_size = 32
+   let batch_size = 66, val_set_size = 32
       JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
       ys_val = ys[1:val_set_size]
@@ -339,18 +334,23 @@ function main()
       Xs_val, ys_val, maxT_val
    end
 
+   global loss_val_saved
    @time predict(X)
    @time @show loss_val_saved = loss(Xs_val, ys_val)
    @time @show loss(Xs_eval, ys_eval)
 
    θ = params(las)
    optimizer = ADAM()
+   # optimizer = Flux.RMSProp(0.0001)
+   # optimizer = AMSGrad()
+   # optimizer = AMSGrad(0.0001)
+   # optimizer = AMSGrad(0.00001)
    data = ((gpu.(xs), ys, maxT) for (xs, ys, maxT) ∈ zip(Xs_train, ys_train, maxTs_train))
 
    show_loss_val() = @show(loss(Xs_val, ys_val))
    show_loss_eval() = @show(loss(Xs_eval, ys_eval))
 
-   @time @epochs 1 begin
+   @time @epochs 3 begin
       @time train!(loss, θ, data, optimizer; cb = throttle(show_loss_eval, 300))
       loss_val = loss(Xs_val, ys_val)
       @show loss_val
@@ -360,6 +360,8 @@ function main()
       end
    end
 end
+
+const loss_val_saved = param(Inf32)
 
 main()
 
