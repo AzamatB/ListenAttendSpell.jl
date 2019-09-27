@@ -246,15 +246,24 @@ function build_batches!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, 
    Xs = Xs[sortingidxs]
    ys = ys[sortingidxs]
 
-   lengthdata = length(Xs)
-   firstidxs = 1:batch_size:lengthdata
-   lastidxs = collect(firstidxs .+ (batch_size - 1))
-   lastidxs[end] = min(lengthdata, lastidxs[end])
+   cumseqlengths = cumsum(length.(ys))
+   nbatches = floor(Int, length(Xs) / batch_size)
+   # subtract 0.5 from the last element of the range
+   # to ensure that i index inside the loop won't go out of bounds due to floating point rounding errors
+   cum_n_elts_rng = range(0, cumseqlengths[end]-0.5; length = nbatches+1)[2:end]
+   lastidxs = similar(sortingidxs, nbatches)
+   i = 1
+   for (n, cum_n_elts_for_a_batch) ∈ enumerate(cum_n_elts_rng)
+      while cumseqlengths[i] < cum_n_elts_for_a_batch
+         i += 1
+      end
+      lastidxs[n] = i
+   end
+   firstidxs = [1; lastidxs[1:(end-1)] .+ 1]
    maxTs = length.(Xs[lastidxs])
 
    xs_batches = [ batch!(Xs[firstidx:lastidx], maxT, multiplicity) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    ys_batches = [ ys[firstidx:lastidx] for (firstidx, lastidx) ∈ zip(firstidxs, lastidxs) ]
-
    return xs_batches, ys_batches, maxTs
 end
 
@@ -309,7 +318,7 @@ function main()
    # Xs_test, ys_test, maxTs_test,
    Xs_eval, ys_eval, maxT_eval,
    Xs_val, ys_val, maxT_val =
-   let batch_size = 66, val_set_size = 32
+   let batch_size = 77, val_set_size = 32
       JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
       ys_val = ys[1:val_set_size]
@@ -356,12 +365,15 @@ function main()
       @show loss_val
       if loss_val < loss_val_saved
          loss_val_saved = loss_val
-         @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" las optimizer
+         @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" las optimizer loss_val_saved
       end
    end
 end
 
-const loss_val_saved = param(Inf32)
+const loss_val_saved = let
+   JLD2.@load "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" loss_val_saved
+   loss_val_saved
+end
 
 main()
 
