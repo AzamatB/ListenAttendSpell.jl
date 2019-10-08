@@ -184,7 +184,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
       ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
       # compute attention context
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
-      αᵢs = softmax(hcat(Eᵢs...)')
+      αᵢs = softmax(vcat(Eᵢs'...))
       # compute attention context, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
       m.state.context = dropdims(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3); dims=3)
       # predict probability distribution over character alphabet
