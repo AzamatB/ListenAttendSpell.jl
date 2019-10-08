@@ -30,3 +30,6 @@ end
 
 seqlenrng = 1:1000
 all(compare(randstring.(rand.((seqlenrng, seqlenrng)))...) for _ ∈ seqlenrng)
+
+
+@test batch_targets([[1, 3, 5], [3, 1], [4, 2, 2, 3]]) == [[1, 64, 126], [3, 62, 124], [5, 124], [125]]
