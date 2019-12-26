@@ -3,7 +3,7 @@
 # CuArrays.allowscalar(false)
 
 using Flux
-using Flux: flip, reset!, onecold, throttle, train!, @treelike, @epochs
+using Flux: flip, reset!, onecold, throttle, train!, @functor, @epochs
 using IterTools
 using LinearAlgebra
 using JLD2
@@ -18,7 +18,7 @@ struct BLSTM{L}
    backward :: L
 end
 
-@treelike BLSTM
+@functor BLSTM
 
 function BLSTM(in::Integer, out::Integer)
    iseven(out) || throw("output dimension of the BLSTM layer must be even")
@@ -30,7 +30,7 @@ end
 
 (m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} = vcat.(m.forward.(xs), flip(m.backward, xs))
 
-# Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
+# Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @functor
 
 function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVecOrMat}
    return vcat.(xs[1:2:end], xs[2:2:end])
@@ -126,7 +126,7 @@ mutable struct State{M <: AbstractMatrix{<:Real}}
    prediction₀ :: M
 end
 
-@treelike State
+@functor State
 
 function State(dim_c::Integer, dim_d::Integer, dim_p::Integer)
    context₀    = zeros(Float32, dim_c, 1)
@@ -151,7 +151,7 @@ struct LAS{V, E, Dϕ, Dψ, L, C}
    infer       :: C   # character distribution inference function
 end
 
-@treelike LAS
+@functor LAS
 
 function LAS(dim_in::Integer, dim_out::Integer;
              dim_encoding::Integer,
