@@ -10,6 +10,8 @@ using JLD2
 using StatsBase
 import Base.Iterators
 
+import Base.AbstractVecOrTuple # Base.AbstractVecOrTuple{T} = Union{AbstractVector{<:T}, Tuple{Vararg{T}}}
+
 # Bidirectional LSTM
 struct BLSTM{L}
    forward  :: L
@@ -31,8 +33,7 @@ end
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @treelike
 
 function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVecOrMat}
-   T = length(xs)
-   return vcat.(xs[1:2:T], xs[2:2:T])
+   return vcat.(xs[1:2:end], xs[2:2:end])
 end
 
 """
@@ -128,9 +129,9 @@ end
 @treelike State
 
 function State(dim_c::Integer, dim_d::Integer, dim_p::Integer)
-   context₀    = param(zeros(Float32, dim_c, 1))
-   decoding₀   = param(zeros(Float32, dim_d, 1))
-   prediction₀ = param(zeros(Float32, dim_p, 1))
+   context₀    = zeros(Float32, dim_c, 1)
+   decoding₀   = zeros(Float32, dim_d, 1)
+   prediction₀ = zeros(Float32, dim_p, 1)
    return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀)
 end
 
@@ -177,7 +178,6 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
    # compute inital decoder state for a batch
    O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
    m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
-   dim_out = size(m.state.prediction, 1)
 
    ŷs = map(1:maxT) do _
       # compute ϕ(sᵢ)
@@ -198,7 +198,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
    return ŷs
 end
 
-function (m::LAS)(xs::AbstractVector{<:AbstractVector})::AbstractVector{<:AbstractVector{<:Real}}
+function (m::LAS)(xs::AbstractVector{<:AbstractVector{<:Real}})::AbstractVector{<:AbstractVector{<:Real}}
    T = length(xs)
    xs = gpu.(reshape.(pad(xs), :,1))
    ŷs = dropdims.(las(xs, T); dims=2)
@@ -257,17 +257,17 @@ function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV
    return lin_idxs
 end
 
-function batch!(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
-   sortingidxs = sortperm(Xs; by=length)
-   Xs = Xs[sortingidxs]
-   ys = ys[sortingidxs]
+function batch(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
+   sortidxs = sortperm(Xs; by=length)
+   Xs = Xs[sortidxs]
+   ys = ys[sortidxs]
 
    cumseqlengths = cumsum(length.(ys))
    nbatches = floor(Int, length(Xs) / batch_size)
    # subtract 0.5 from the last element of the range
    # to ensure that i index inside the loop won't go out of bounds due to floating point rounding errors
    cum_n_elts_rng = range(0, cumseqlengths[end]-0.5; length = nbatches+1)[2:end]
-   lastidxs = similar(sortingidxs, nbatches)
+   lastidxs = similar(sortidxs, nbatches)
    i = 1
    for (n, cum_n_elts_for_a_batch) ∈ enumerate(cum_n_elts_rng)
       while cumseqlengths[i] < cum_n_elts_for_a_batch
@@ -339,77 +339,88 @@ function predict(xs::AbstractVector{<:AbstractVector{<:Real}}, labels=PHONEMES):
    return prediction
 end
 
-
 function main()
-   # load data
+# load data
+X, y,
+Xs_train, ys_train, maxTs_train,
+# Xs_test, ys_test, maxTs_test,
+Xs_eval, ys_eval, maxT_eval,
+Xs_val, ys_val, maxT_val =
+let batch_size = 77, val_set_size = 32
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+
+   ys_val = ys[1:val_set_size]
+   maxT_val = maximum(length, ys_val)
+   Xs_val = batch_inputs!(Xs[1:val_set_size], maxT_val)
+   ys_val = batch_targets(ys_val, maxT_val)
+
+   Xs_test, ys_test, maxTs_test = batch(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
+
+   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
+   X, y = first(Xs), first(ys)
+   Xs_train, ys_train, maxTs_train = batch(Xs, ys, batch_size)
+
+   eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
+   ys_eval = ys[eval_idxs]
+   maxT_eval = maximum(length, ys_eval)
+   Xs_eval = batch_inputs!(Xs[eval_idxs], maxT_eval)
+   ys_eval = batch_targets(ys_eval, maxT_eval)
+
    X, y,
    Xs_train, ys_train, maxTs_train,
    # Xs_test, ys_test, maxTs_test,
    Xs_eval, ys_eval, maxT_eval,
-   Xs_val, ys_val, maxT_val =
-   let batch_size = 77, val_set_size = 32
-      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+   Xs_val, ys_val, maxT_val
+end
 
-      ys_val = ys[1:val_set_size]
-      maxT_val = maximum(length, ys_val)
-      Xs_val = batch_inputs!(Xs[1:val_set_size], maxT_val)
-      ys_val = batch_targets(ys_val, maxT_val)
+global loss_val_saved
+θ = params(las)
+optimiser = ADAM()
+# optimiser = Flux.RMSProp(0.0001)
+# optimiser = AMSGrad()
+# optimiser = AMSGrad(0.0001)
+# optimiser = AMSGrad(0.00001)
 
-      Xs_test, ys_test, maxTs_test = batch!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
+using BenchmarkTools
+@btime loss(Xs_eval, ys_eval)
+(xs, ys) = first.([Xs_train, ys_train])
 
-      JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-      X, y = first(Xs), first(ys)
-      Xs_train, ys_train, maxTs_train = batch!(Xs, ys, batch_size)
+xs = gpu.(xs)
+l, pb = Flux.pullback(θ) do
+   loss(xs, ys)
+end
+dldθ = pb(one(l))
 
-      eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
-      ys_eval = ys[eval_idxs]
-      maxT_eval = maximum(length, ys_eval)
-      Xs_eval = batch_inputs!(Xs[eval_idxs], maxT_eval)
-      ys_eval = batch_targets(ys_eval, maxT_eval)
 
-      X, y,
-      Xs_train, ys_train, maxTs_train,
-      # Xs_test, ys_test, maxTs_test,
-      Xs_eval, ys_eval, maxT_eval,
-      Xs_val, ys_val, maxT_val
+n_epochs = 2
+for epoch ∈ 1:n_epochs
+   for (xs, ys) ∈ zip(Xs_train, ys_train)
+      xs = gpu.(xs)
+      l, pb = Flux.pullback(θ) do
+         loss(xs, ys)
+      end
+      dldθ = pb(1.0f0)
+      Flux.Optimise.update!(optimiser, θ, dldθ)
+      @show l
    end
-
-   global loss_val_saved
-   θ = params(las)
-   optimiser = ADAM()
-   # optimiser = Flux.RMSProp(0.0001)
-   # optimiser = AMSGrad()
-   # optimiser = AMSGrad(0.0001)
-   # optimiser = AMSGrad(0.00001)
-
-   n_epochs = 2
-   for epoch ∈ 1:n_epochs
-      for (xs, ys) ∈ zip(Xs_train, ys_train)
-         xs = gpu.(xs)
-         l, pb = Flux.Tracker.forward(θ) do
-            loss(xs, ys)
-         end
-         ∇θ = pb(1.0f0)
-         Flux.Optimise.update!(optimiser, θ, ∇θ)
-         @show l
-      end
-      @info "finished epoch $epoch"
-      @show loss(Xs_eval, ys_eval)
-      loss_val = loss(Xs_val, ys_val)
-      @show loss_val
-      if loss_val < loss_val_saved
-         loss_val_saved = loss_val
-         @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" las optimiser loss_val_saved
-      end
+   @info "finished epoch $epoch"
+   @show loss(Xs_eval, ys_eval)
+   loss_val = loss(Xs_val, ys_val)
+   @show loss_val
+   if loss_val < loss_val_saved
+      loss_val_saved = loss_val
+      @save "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" las optimiser loss_val_saved
    end
 end
+end
+
 
 const loss_val_saved = let
    JLD2.@load "/Users/Azamat/Projects/LAS/models/TIMIT/LAS.jld2" loss_val_saved
    loss_val_saved
 end
 
-main()
+# main()
 
 """
    levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
