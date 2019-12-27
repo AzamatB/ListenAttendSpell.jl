@@ -10,8 +10,6 @@ using JLD2
 using StatsBase
 import Base.Iterators
 
-import Base.AbstractVecOrTuple # Base.AbstractVecOrTuple{T} = Union{AbstractVector{<:T}, Tuple{Vararg{T}}}
-
 # Bidirectional LSTM
 struct BLSTM{L}
    forward  :: L
@@ -383,12 +381,13 @@ optimiser = ADAM()
 
 using BenchmarkTools
 @btime loss(Xs_eval, ys_eval)
-(xs, ys) = first.([Xs_train, ys_train])
 
+xs, ys = first(Xs_train), first(ys_train)
 xs = gpu.(xs)
 l, pb = Flux.pullback(θ) do
    loss(xs, ys)
 end
+
 dldθ = pb(one(l))
 
 
