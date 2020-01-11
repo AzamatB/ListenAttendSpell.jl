@@ -3,12 +3,15 @@
 # CuArrays.allowscalar(false)
 
 using Flux
-using Flux: flip, reset!, onecold, throttle, train!, @functor, @epochs
-using IterTools
+using Flux: reset!, onecold, throttle, train!, @functor, @epochs
+using Zygote
+using Zygote: Buffer
 using LinearAlgebra
 using JLD2
 using StatsBase
-import Base.Iterators
+using IterTools
+using Base.Iterators: reverse
+
 
 # Bidirectional LSTM
 struct BLSTM{L}
@@ -26,13 +29,25 @@ function BLSTM(in::Integer, out::Integer)
    return BLSTM(forward, backward)
 end
 
-(m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} = vcat.(m.forward.(xs), flip(m.backward, xs))
+function flip(f, xs)
+   flipped_xs = Buffer(xs)
+   for t ∈ reverse(eachindex(xs))
+      flipped_xs[t] = f(xs[t])
+   end
+   return copy(flipped_xs)
+end
+
+(m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} =
+   vcat.(m.forward.(xs), flip(m.backward, xs))
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @functor
 
-function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVecOrMat}
-   return vcat.(xs[1:2:end], xs[2:2:end])
-end
+restack(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} =
+   [vcat(xs[i-1], xs[i]) for i ∈ 2:2:lastindex(xs)]
+
+# function restack(xs::VV)::VV where VV <: AbstractVector{<:AbstractVecOrMat}
+#    return vcat.(xs[1:2:end], xs[2:2:end])
+# end
 
 """
    PBLSTM(in::Integer, out::Integer)
@@ -170,7 +185,14 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
    # compute input encoding
    hs = m.listen(xs)
    # concatenate sequence of D×N matrices into ssingle D×N×T 3-dimdimensional array
-   Hs = cat(hs...; dims=3)
+   h = first(hs)
+   Hsbuffer = Buffer(h, size(h,1), size(h,2), length(hs))
+   for k ∈ eachindex(hs)
+      Hsbuffer[:,:,k] = hs[k]
+   end
+   Hs = copy(Hsbuffer)
+   # Hs = cat(hs...; dims=3)
+   # Hs = reduce((s₁, s₂) -> cat(s₁, s₂; dims=3), hs)
    # precompute ψ(H)
    ψHs = m.attention_ψ.(hs)
    # compute inital decoder state for a batch
@@ -179,10 +201,14 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
 
    ŷs = map(1:maxT) do _
       # compute ϕ(sᵢ)
-      ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
+      # ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
+      ϕSᵢᵀ = permutedims(m.attention_ϕ(m.state.decoding))
       # compute attention context
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
-      αᵢs = softmax(vcat(Eᵢs'...))
+      # αᵢs = softmax(reduce(hcat, Eᵢs)')
+      αᵢs = softmax(hcat(Eᵢs...)')
+      # αᵢs = softmax(vcat(Eᵢs'...))
+      # αᵢs = softmax(reduce(vcat, Eᵢs'))
       # compute attention context, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
       m.state.context = dropdims(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3); dims=3)
       # predict probability distribution over character alphabet
@@ -198,7 +224,7 @@ end
 
 function (m::LAS)(xs::AbstractVector{<:AbstractVector{<:Real}})::AbstractVector{<:AbstractVector{<:Real}}
    T = length(xs)
-   xs = gpu.(reshape.(pad(xs), :,1))
+   xs = gpu.(reshape.(pad(xs, 2^(length(m.listen)-1)), :,1))
    ŷs = dropdims.(las(xs, T); dims=2)
    return ŷs
 end
@@ -210,7 +236,7 @@ function Flux.reset!(m::LAS)
    return nothing
 end
 
-function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:AbstractVector}
+function pad(xs::VV, multiplicity)::VV where VV <: AbstractVector{<:AbstractVector}
    T = length(xs)
    newlength = ceil(Int, T / multiplicity)multiplicity
    el_min = minimum(minimum(xs))
@@ -220,7 +246,7 @@ function pad(xs::VV; multiplicity::Integer=8)::VV where VV <: AbstractVector{<:A
    return xs
 end
 
-function batch_inputs!(Xs, maxT::Integer = maximum(length, Xs), multiplicity::Integer = 8)::Vector{<:AbstractMatrix}
+function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:AbstractMatrix}
    # Xs must be an iterable, whose each element is a vector of vectors,
    # and dimensionality of all element vectors must be the same
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
@@ -255,7 +281,7 @@ function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV
    return lin_idxs
 end
 
-function batch(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer = 8)
+function batch(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer)
    sortidxs = sortperm(Xs; by=length)
    Xs = Xs[sortidxs]
    ys = ys[sortidxs]
@@ -276,7 +302,7 @@ function batch(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::Abstr
    firstidxs = [1; lastidxs[1:(end-1)] .+ 1]
    maxTs = length.(Xs[lastidxs])
 
-   xs_batches = [ batch_inputs!(Xs[firstidx:lastidx], maxT, multiplicity) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   xs_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    idxs_batches = [ batch_targets(ys[firstidx:lastidx], maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    return xs_batches, idxs_batches, maxTs
 end
@@ -345,23 +371,25 @@ Xs_train, ys_train, maxTs_train,
 Xs_eval, ys_eval, maxT_eval,
 Xs_val, ys_val, maxT_val =
 let batch_size = 77, val_set_size = 32
+   multiplicity = 2^(length(las.listen) - 1)
+
    JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
    ys_val = ys[1:val_set_size]
    maxT_val = maximum(length, ys_val)
-   Xs_val = batch_inputs!(Xs[1:val_set_size], maxT_val)
+   Xs_val = batch_inputs!(Xs[1:val_set_size], multiplicity, maxT_val)
    ys_val = batch_targets(ys_val, maxT_val)
 
-   Xs_test, ys_test, maxTs_test = batch(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
+   Xs_test, ys_test, maxTs_test = batch(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size, multiplicity)
 
    JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
    X, y = first(Xs), first(ys)
-   Xs_train, ys_train, maxTs_train = batch(Xs, ys, batch_size)
+   Xs_train, ys_train, maxTs_train = batch(Xs, ys, batch_size, multiplicity)
 
    eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
    ys_eval = ys[eval_idxs]
    maxT_eval = maximum(length, ys_eval)
-   Xs_eval = batch_inputs!(Xs[eval_idxs], maxT_eval)
+   Xs_eval = batch_inputs!(Xs[eval_idxs], multiplicity, maxT_eval)
    ys_eval = batch_targets(ys_eval, maxT_eval)
 
    X, y,
@@ -445,7 +473,7 @@ function levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
       # ignore suffix common to both sequences
       lenseq₁ = length(seq₁)
       offset = lenseq₁
-      for (i, el₁, el₂) ∈ zip(0:lenseq₁, Iterators.reverse(seq₁), Iterators.reverse(seq₂))
+      for (i, el₁, el₂) ∈ zip(0:lenseq₁, reverse(seq₁), reverse(seq₂))
          if el₁ != el₂
             offset = i
             break

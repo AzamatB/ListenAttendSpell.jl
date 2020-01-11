@@ -41,8 +41,8 @@ const FOLDINGS = Dict(
    "ux" => "uw"
 )
 
-const FRAME_LENGTH = 0.025 # ms
-const FRAME_INTERVAL = 0.010 # ms
+const WINDOW = 0.025 # ms
+const STEP = 0.010 # ms
 
 """
    build_features(wavfile::AbstractString, phnfile::AbstractString)
@@ -51,8 +51,9 @@ Extracts Mel filterbanks and associated labels from `wavfile` and `phnfile`.
 """
 function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorder::Integer=2)
    samples, sampling_frequency = wavread(wavfile)
+   (size(samples, 2) == 1) || throw("input .wav file must be mono channeled")
    samples = vec(samples)
-   mfccs, _, _ = mfcc(samples, sampling_frequency, :rasta; wintime=FRAME_LENGTH, steptime=FRAME_INTERVAL)
+   mfccs, _, _ = mfcc(samples, sampling_frequency, :rasta; wintime=WINDOW, steptime=STEP)
 
    lines = readlines(phnfile)
    labels = similar(lines)
@@ -62,9 +63,9 @@ function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorde
       boundaries[i] = parse(Int, boundary)
    end
 
-   sampl_length = FRAME_LENGTH * sampling_frequency
-   sampl_interval = FRAME_INTERVAL * sampling_frequency
-   half_frame_length = FRAME_LENGTH / 2
+   sampl_length = WINDOW * sampling_frequency
+   sampl_interval = STEP * sampling_frequency
+   half_frame_length = WINDOW / 2
 
    # begin generating sequence labels by looping through the MFCC frames
    nsegments = length(labels)
