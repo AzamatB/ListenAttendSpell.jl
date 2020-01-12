@@ -182,7 +182,7 @@ end
 
 function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(xs))::AbstractVector{<:AbstractMatrix{<:Real}}
    batch_size = size(first(xs), 2)
-   # compute input encoding
+   # compute input encoding, which are also values for the attention layer
    hs = m.listen(xs)
    # concatenate sequence of D×N matrices into ssingle D×N×T 3-dimdimensional array
    h = first(hs)
@@ -193,23 +193,24 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
    Hs = copy(Hsbuffer)
    # Hs = cat(hs...; dims=3)
    # Hs = reduce((s₁, s₂) -> cat(s₁, s₂; dims=3), hs)
-   # precompute ψ(H)
+   # precompute keys ψ(H)
    ψHs = m.attention_ψ.(hs)
    # compute inital decoder state for a batch
    O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
    m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
 
    ŷs = map(1:maxT) do _
-      # compute ϕ(sᵢ)
+      # compute query ϕ(sᵢ)
       # ϕSᵢᵀ = m.attention_ϕ(m.state.decoding)'
       ϕSᵢᵀ = permutedims(m.attention_ϕ(m.state.decoding))
-      # compute attention context
+      # compute energies
       Eᵢs = diag.(Ref(ϕSᵢᵀ) .* ψHs)
+      # compute attentions weights
       # αᵢs = softmax(reduce(hcat, Eᵢs)')
       αᵢs = softmax(hcat(Eᵢs...)')
       # αᵢs = softmax(vcat(Eᵢs'...))
       # αᵢs = softmax(reduce(vcat, Eᵢs'))
-      # compute attention context, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
+      # compute attended context by normalizing values with respect to attention weights, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
       m.state.context = dropdims(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3); dims=3)
       # predict probability distribution over character alphabet
       m.state.prediction = m.infer([m.state.decoding; m.state.context])
