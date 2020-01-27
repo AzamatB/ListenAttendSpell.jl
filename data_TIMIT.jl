@@ -50,10 +50,10 @@ const STEP = 0.010 # ms
 Extracts Mel filterbanks and associated labels from `wavfile` and `phnfile`.
 """
 function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorder::Integer=2)
-   samples, sampling_frequency = wavread(wavfile)
+   samples, sample_rate = wavread(wavfile)
    (size(samples, 2) == 1) || throw("input .wav file must be mono channeled")
    samples = vec(samples)
-   mfccs, _, _ = mfcc(samples, sampling_frequency, :rasta; wintime=WINDOW, steptime=STEP)
+   mfccs, _, _ = mfcc(samples, sample_rate, :rasta; wintime=WINDOW, steptime=STEP)
 
    lines = readlines(phnfile)
    labels = similar(lines)
@@ -63,8 +63,8 @@ function build_features(wavfile::AbstractString, phnfile::AbstractString, Δorde
       boundaries[i] = parse(Int, boundary)
    end
 
-   sampl_length = WINDOW * sampling_frequency
-   sampl_interval = STEP * sampling_frequency
+   sampl_length = WINDOW * sample_rate
+   sampl_interval = STEP * sample_rate
    half_frame_length = WINDOW / 2
 
    # begin generating sequence labels by looping through the MFCC frames
@@ -124,11 +124,11 @@ function build_dataset(dir_data::AbstractString, path_out::AbstractString; Δord
 end
 
 
-const DIR_DATA_TEST  = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_wav/TEST"
-const PATH_OUT_TEST   = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld"
+const DIR_DATA_TEST  = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_wav/TEST"
+const PATH_OUT_TEST   = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld"
 
-const DIR_DATA_TRAIN = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_wav/TRAIN"
-const PATH_OUT_TRAIN  = "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld"
+const DIR_DATA_TRAIN = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_wav/TRAIN"
+const PATH_OUT_TRAIN  = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld"
 
 @time build_dataset(DIR_DATA_TEST, PATH_OUT_TEST)
 @time build_dataset(DIR_DATA_TRAIN, PATH_OUT_TRAIN)

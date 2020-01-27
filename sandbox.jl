@@ -60,7 +60,7 @@ Xs_train, ys_train, maxTs_train,
 Xs_eval, ys_eval, maxT_eval,
 Xs_val, ys_val, maxT_val =
 let batch_size = 77, val_set_size = 32
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+   JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
 
    ys_val = ys[1:val_set_size]
    maxT_val = maximum(length, ys_val)
@@ -68,7 +68,7 @@ let batch_size = 77, val_set_size = 32
 
    Xs_test, ys_test, maxTs_test = batch!(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size)
 
-   JLD2.@load "/Users/Azamat/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
+   JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
    X, y = first(Xs), first(ys)
    Xs_train, ys_train, maxTs_train = batch!(Xs, ys, batch_size)
 
