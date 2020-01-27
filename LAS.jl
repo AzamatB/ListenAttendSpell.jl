@@ -293,11 +293,11 @@ end
 
 function pad(xs::VV, multiplicity)::VV where VV <: AbstractVector{<:AbstractVector}
    T = length(xs)
-   newlength = ceil(Int, T / multiplicity)multiplicity
-   el_min = minimum(minimum(xs))
-   x = fill!(similar(first(xs)), el_min)
-   xs = resize!(copy(xs), newlength)
-   xs[(T+1):end] .= Ref(x)
+   newT = ceil(Int, T / multiplicity)multiplicity
+   z = similar(first(xs))
+   fill!(z, zero(eltype(z)))
+   xs = resize!(copy(xs), newT)
+   xs[(T+1):end] .= Ref(z)
    return xs
 end
 
@@ -306,13 +306,14 @@ function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length
    # and dimensionality of all element vectors must be the same
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
    newT = ceil(Int, maxT / multiplicity)multiplicity
-   # resize each sequence `xs` to the size `newT` paddding with vector filled with smallest values
+   # initialize & populate padding vector
+   z = similar(first(first(Xs)))
+   fill!(z, zero(eltype(z)))
+   # resize each sequence `xs` to the size `newT` by paddding it with vector z of zeros
    for xs ∈ Xs
       T = length(xs)
-      el_min = minimum(minimum(xs))
-      x = fill!(similar(first(xs)), el_min)
       resize!(xs, newT)
-      xs[(T+1):end] .= (x,)
+      xs[(T+1):end] .= Ref(z)
    end
    # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
    return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
