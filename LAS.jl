@@ -8,10 +8,11 @@ using Zygote
 using Zygote: Buffer
 using LinearAlgebra
 using JLD2
-using StatsBase
 using IterTools
 using Base.Iterators: reverse
 
+# temporary fix
+Zygote.@nograd axes
 
 # Bidirectional LSTM
 struct BLSTM{L}
@@ -45,7 +46,7 @@ function (m::BLSTM)(Xs::T)::T where T <: AbstractArray{<:Real,3}
    Ys = Buffer(Xs, 2m.dim_out, size(Xs,2), size(Xs,3))
    slice_f = axes(Ys,1)[1:m.dim_out]
    slice_b = axes(Ys,1)[(m.dim_out+1):end]
-   @views @inbounds for (t_f, t_b) ∈ zip(axes(Xs,3), reverse(axes(Xs,3)))
+   @inbounds @views for (t_f, t_b) ∈ zip(axes(Xs,3), reverse(axes(Xs,3)))
       Ys[slice_f,:,t_f] = m.forward(Xs[:,:,t_f])
       Ys[slice_b,:,t_b] = m.backward(Xs[:,:,t_b])
    end
@@ -76,11 +77,11 @@ end
 
 Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
 
-function (m::PBLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat}
+@views function (m::PBLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat}
    ys = vcat.(m.forward.(xs), flip(m.backward, xs))
    # restack step
-   # return vcat.(ys[1:2:end], ys[2:2:end])
-   return [vcat(ys[i-1], ys[i]) for i ∈ 2:2:lastindex(ys)]
+   # return @inbounds(vcat.(ys[1:2:end], ys[2:2:end]))
+   return [@inbounds vcat(ys[i-1], ys[i]) for i ∈ 2:2:lastindex(ys)]
 end
 
 function (m::PBLSTM)(Xs::T)::T where T <: AbstractArray{<:Real,3}
@@ -90,7 +91,7 @@ function (m::PBLSTM)(Xs::T)::T where T <: AbstractArray{<:Real,3}
    slice_f_even = axes(Ys, 1)[(2m.dim_out+1):(3m.dim_out)]
    slice_b_even = axes(Ys, 1)[(3m.dim_out+1):end]
 
-   @views @inbounds for t ∈ axes(Ys, 3)
+   @inbounds @views for t ∈ axes(Ys, 3)
       Ys[slice_f_odd,:,t]  = m.forward(Xs[:,:,2t-1])
       Ys[slice_f_even,:,t] = m.forward(Xs[:,:,2t])
       Ys[slice_b_odd,:,t]  = m.backward(Xs[:,:,end-2t+2])
@@ -255,7 +256,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
    ψhs = m.attention_ψ.(hs)
    # compute inital decoder state for a batch
    O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
-   m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context]) .+ O
+   m.state.decoding = m.state.decoding .+ O
 
    ŷs = map(1:maxT) do _
       # compute query ϕ(sᵢ)
@@ -381,15 +382,30 @@ end
 #    las, PHONEMES
 # end
 
+# const las, PHONEMES = let
+#    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
+#
+#    encoder_dims = (
+#       blstm       = (in = 39, out = 64),
+#       pblstms_out = (128, 128, 64)
+#    )
+#    attention_dim = 128
+#    decoder_out_dims = (256, 256)
+#    out_dim = 61
+#
+#    las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
+#    las, PHONEMES
+# end
+
 const las, PHONEMES = let
    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
 
    encoder_dims = (
-      blstm       = (in = 39, out = 64),
-      pblstms_out = (128, 128, 64)
+      blstm       = (in = 39, out = 2),
+      pblstms_out = (3, 4, 5)
    )
-   attention_dim = 128
-   decoder_out_dims = (256, 256)
+   attention_dim = 6
+   decoder_out_dims = (7, 8)
    out_dim = 61
 
    las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
@@ -419,10 +435,8 @@ end
 
 function main()
 # load data
-X, y,
 Xs_train, ys_train, maxTs_train,
 # Xs_test, ys_test, maxTs_test,
-Xs_eval, ys_eval, maxT_eval,
 Xs_val, ys_val, maxT_val =
 let batch_size = 77, val_set_size = 32
    multiplicity = 2^(length(las.listen) - 1)
@@ -437,24 +451,15 @@ let batch_size = 77, val_set_size = 32
    Xs_test, ys_test, maxTs_test = batch(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size, multiplicity)
 
    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-   X, y = first(Xs), first(ys)
    Xs_train, ys_train, maxTs_train = batch(Xs, ys, batch_size, multiplicity)
 
-   eval_idxs = sample(eachindex(ys), val_set_size; replace=false)
-   ys_eval = ys[eval_idxs]
-   maxT_eval = maximum(length, ys_eval)
-   Xs_eval = batch_inputs!(Xs[eval_idxs], multiplicity, maxT_eval)
-   ys_eval = batch_targets(ys_eval, maxT_eval)
-
-   X, y,
    Xs_train, ys_train, maxTs_train,
    # Xs_test, ys_test, maxTs_test,
-   Xs_eval, ys_eval, maxT_eval,
    Xs_val, ys_val, maxT_val
 end
 
 global loss_val_saved
-θ = params(las)
+θ = Flux.params(las)
 optimiser = ADAM()
 # optimiser = Flux.RMSProp(0.0001)
 # optimiser = AMSGrad()
@@ -462,7 +467,7 @@ optimiser = ADAM()
 # optimiser = AMSGrad(0.00001)
 
 using BenchmarkTools
-@btime loss(Xs_eval, ys_eval)
+@btime loss(Xs_val, ys_val)
 
 xs, ys = first(Xs_train), first(ys_train)
 xs = gpu.(xs)
@@ -470,7 +475,7 @@ l, pb = Flux.pullback(θ) do
    loss(xs, ys)
 end
 
-dldθ = pb(one(l))
+@time dldθ = pb(one(l))
 
 
 n_epochs = 2
