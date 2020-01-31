@@ -3,16 +3,13 @@
 # CuArrays.allowscalar(false)
 
 using Flux
-using Flux: reset!, onecold, @functor, @epochs
+using Flux: reset!, onecold, @functor
 using Zygote
 using Zygote: Buffer
 using LinearAlgebra
 using JLD2
 using IterTools
 using Base.Iterators: reverse
-
-# temporary fix
-Zygote.@nograd axes
 
 # Bidirectional LSTM
 struct BLSTM{L}
@@ -54,7 +51,6 @@ function (m::BLSTM)(Xs::T)::T where T <: DenseArray{<:Real,3}
 end
 
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @functor
-
 
 """
    PBLSTM(in::Integer, out::Integer)
@@ -258,7 +254,6 @@ function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::D
       Eᵢs = diag.((ϕsᵢᵀ,) .* ψhs)
       # compute attentions weights
       αᵢs = softmax(hcat(Eᵢs...); dims=2)
-      # αᵢs = softmax(cols2mat(Eᵢs); dims=2)
       # αᵢs = softmax(hcat(Eᵢs...)')
       # αᵢs = softmax(reduce(hcat, Eᵢs); dims=2)
       # αᵢs = softmax(reduce(hcat, Eᵢs)')
