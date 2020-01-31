@@ -39,10 +39,10 @@ function flip(f, xs)
    return copy(flipped_xs)
 end
 
-(m::BLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat} =
+(m::BLSTM)(xs::DenseVector{<:DenseVecOrMat})::DenseVector{<:DenseVecOrMat} =
    vcat.(m.forward.(xs), flip(m.backward, xs))
 
-function (m::BLSTM)(Xs::T)::T where T <: AbstractArray{<:Real,3}
+function (m::BLSTM)(Xs::T)::T where T <: DenseArray{<:Real,3}
    Ys = Buffer(Xs, 2m.dim_out, size(Xs,2), size(Xs,3))
    slice_f = axes(Ys,1)[1:m.dim_out]
    slice_b = axes(Ys,1)[(m.dim_out+1):end]
@@ -77,14 +77,14 @@ end
 
 Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
 
-@views function (m::PBLSTM)(xs::AbstractVector{<:AbstractVecOrMat})::AbstractVector{<:AbstractVecOrMat}
+@views function (m::PBLSTM)(xs::DenseVector{<:DenseVecOrMat})::DenseVector{<:DenseVecOrMat}
    ys = vcat.(m.forward.(xs), flip(m.backward, xs))
    # restack step
    # return @inbounds(vcat.(ys[1:2:end], ys[2:2:end]))
    return [@inbounds vcat(ys[i-1], ys[i]) for i ∈ 2:2:lastindex(ys)]
 end
 
-function (m::PBLSTM)(Xs::T)::T where T <: AbstractArray{<:Real,3}
+function (m::PBLSTM)(Xs::T)::T where T <: DenseArray{<:Real,3}
    Ys = Buffer(Xs, 4m.dim_out, size(Xs,2), size(Xs,3) ÷ 2)
    slice_f_odd  = axes(Ys, 1)[1:m.dim_out]
    slice_b_odd  = axes(Ys, 1)[(m.dim_out+1):(2m.dim_out)]
@@ -162,7 +162,7 @@ end
 
 CharacterDistribution(in::Integer, out::Integer; applylog::Bool=true) = Chain(Dense(in, out), applylog ? logsoftmax : softmax)
 
-mutable struct State{M <: AbstractMatrix{<:Real}}
+mutable struct State{M <: DenseMatrix{<:Real}}
    context     :: M   # last attention context
    decoding    :: M   # last decoder state
    prediction  :: M   # last prediction
@@ -235,23 +235,27 @@ end
 
 # Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
 
-function energy(ϕs::T, ψh::T) where T <: AbstractMatrix{<:Real}
+# function cols2mat(cols::DenseVector{<:DenseVector{T}})::DenseMatrix{T} where {T <: Real}
+#    col₁ = first(cols)
+#    mat = Buffer(col₁, length(col₁), length(cols))
+#    setindex!.(Ref(mat), cols, :, axes(mat, 2))
+#    return copy(mat)
+# end
+
+function energy(ϕs::T, ψh::T) where T <: DenseMatrix{<:Real}
     return eachcol(ϕs) .⋅ eachcol(ψh)
 end
 
-function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(xs))::AbstractVector{<:AbstractMatrix{<:Real}}
+function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::DenseVector{<:DenseMatrix{<:Real}}
    batch_size = size(first(xs), 2)
    # compute input encoding, which are also values for the attention layer
    hs = m.listen(xs)
    # concatenate sequence of D×N matrices into ssingle D×N×T 3-dimdimensional array
    h = first(hs)
    Hs_buffer = Buffer(h, size(h,1), batch_size, length(hs))
-   @inbounds for k ∈ eachindex(hs)
-      Hs_buffer[:,:,k] = hs[k]
-   end
+   setindex!.(Ref(Hs_buffer), hs, :, :, axes(Hs_buffer, 3))
    Hs = copy(Hs_buffer)
    # Hs = cat(hs...; dims=3)
-   # Hs = reduce((s₁, s₂) -> cat(s₁, s₂; dims=3), hs)
    # precompute keys ψ(H)
    ψhs = m.attention_ψ.(hs)
    # compute inital decoder state for a batch
@@ -266,6 +270,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
       Eᵢs = energy.(Ref(ϕsᵢ), ψhs)
       # compute attentions weights
       αᵢs = softmax(hcat(Eᵢs...); dims=2)
+      # αᵢs = softmax(cols2mat(Eᵢs); dims=2)
       # αᵢs = softmax(hcat(Eᵢs...)')
       # αᵢs = softmax(reduce(hcat, Eᵢs); dims=2)
       # αᵢs = softmax(reduce(hcat, Eᵢs)')
@@ -284,7 +289,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractMatrix}, maxT::Integer = length(x
    return ŷs
 end
 
-function (m::LAS)(xs::AbstractVector{<:AbstractVector{<:Real}})::AbstractVector{<:AbstractVector{<:Real}}
+function (m::LAS)(xs::DenseVector{<:DenseVector{<:Real}})::DenseVector{<:DenseVector{<:Real}}
    T = length(xs)
    xs = gpu.(reshape.(pad(xs, 2^(length(m.listen)-1)), :,1))
    ŷs = dropdims.(las(xs, T); dims=2)
@@ -292,7 +297,7 @@ function (m::LAS)(xs::AbstractVector{<:AbstractVector{<:Real}})::AbstractVector{
 end
 
 
-function pad(xs::VV, multiplicity)::VV where VV <: AbstractVector{<:AbstractVector}
+function pad(xs::VV, multiplicity)::VV where VV <: DenseVector{<:DenseVector}
    T = length(xs)
    newT = ceil(Int, T / multiplicity)multiplicity
    z = similar(first(xs))
@@ -302,7 +307,7 @@ function pad(xs::VV, multiplicity)::VV where VV <: AbstractVector{<:AbstractVect
    return xs
 end
 
-function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:AbstractMatrix}
+function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
    # Xs must be an iterable, whose each element is a vector of vectors,
    # and dimensionality of all element vectors must be the same
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
@@ -320,7 +325,7 @@ function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length
    return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
 end
 
-function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV <: AbstractVector{<:AbstractVector{<:Integer}}
+function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
    batch_size = length(ys)
    lin_idxs = similar(ys, maxT)
    idxs = similar(first(ys), batch_size)
@@ -338,7 +343,7 @@ function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV
    return lin_idxs
 end
 
-function batch(Xs::AbstractVector{<:AbstractVector{<:AbstractVector}}, ys::AbstractVector{<:AbstractVector}, batch_size::Integer, multiplicity::Integer)
+function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
    sortidxs = sortperm(Xs; by=length)
    Xs = Xs[sortidxs]
    ys = ys[sortidxs]
@@ -413,21 +418,21 @@ const las, PHONEMES = let
 end
 
 
-function loss(xs::AbstractVector{<:AbstractMatrix{<:Real}}, indexes::AbstractVector{<:AbstractVector{<:Integer}})::Real
+function loss(xs::DenseVector{<:DenseMatrix{<:Real}}, indexes::DenseVector{<:DenseVector{<:Integer}})::Real
    ŷs = las(xs, length(indexes))
    l = -sum(sum.(getindex.(ŷs, indexes)))
    return l
 end
 
 # best path decoding
-function predict(xs::AbstractVector{<:AbstractMatrix{<:Real}}, lengths::AbstractVector{<:Integer}, labels=PHONEMES)::AbstractVector{<:AbstractVector}
+function predict(xs::DenseVector{<:DenseMatrix{<:Real}}, lengths::DenseVector{<:Integer}, labels=PHONEMES)::DenseVector{<:DenseVector}
    maxT = maximum(lengths)
    Ŷs = las(gpu.(xs), maxT) |> cpu
    predictions = [onecold(@view(Ŷs[:, 1:len, n]), labels) for (n, len) ∈ enumerate(lengths)]
    return predictions
 end
 
-function predict(xs::AbstractVector{<:AbstractVector{<:Real}}, labels=PHONEMES)::AbstractVector
+function predict(xs::DenseVector{<:DenseVector{<:Real}}, labels=PHONEMES)::DenseVector
    Ŷ = las(xs) |> cpu
    prediction = onecold(Ŷ, labels)
    return prediction
@@ -469,13 +474,13 @@ optimiser = ADAM()
 using BenchmarkTools
 @btime loss(Xs_val, ys_val)
 
-xs, ys = first(Xs_train), first(ys_train)
+xs, ys = last(Xs_train), last(ys_train)
 xs = gpu.(xs)
 l, pb = Flux.pullback(θ) do
    loss(xs, ys)
 end
 
-@time dldθ = pb(one(l))
+@btime dldθ = pb(one(l))
 
 
 n_epochs = 2
