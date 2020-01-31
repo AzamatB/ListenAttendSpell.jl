@@ -10,6 +10,7 @@ using LinearAlgebra
 using JLD2
 using IterTools
 using Base.Iterators: reverse
+using StatsBase
 
 # Bidirectional LSTM
 struct BLSTM{L}
@@ -53,7 +54,7 @@ end
 # Flux.reset!(m::BLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @functor
 
 """
-   PBLSTM(in::Integer, out::Integer)
+    PBLSTM(in::Integer, out::Integer)
 
 Pyramidal BLSTM is the same as BLSTM, with the addition that the outputs of BLSTM are concatenated at every two consecutive steps.
 """
@@ -101,8 +102,8 @@ end
 """
     Encoder(dims::NamedTuple{(:blstm, :pblstms_out),Tuple{NamedTuple{(:in, :out),Tuple{Int,Int}}, T}}) where T <: Union{Int, NTuple{N,Int} where N} -> Chain
 
-Construct Encoder neural network a.k.a Listener, whose dimension are specified by named tuple `dims`.
-Encoder consists BLSTM layer followed by block of PBLSTM layers. It accepts filter bank spectra as input and acts as acoustic model encoder.
+Construct Encoder neural network a.k.a Listener from dimensions specified by named tuple `dims`.
+`Encoder` consists BLSTM layer followed by a block of PBLSTM layers. It accepts filter bank spectra as input and acts as an acoustic model encoder.
 
 # Examples
 ```jldoctest
@@ -231,6 +232,8 @@ end
 
 # Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
 
+time_squashing_factor(m::LAS)::Integer = 2^(length(m.listen) - 1)
+
 function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::DenseVector{<:DenseMatrix{<:Real}}
    batch_size = size(first(xs), 2)
    # compute input encoding, which are also values for the attention layer
@@ -290,9 +293,13 @@ function pad(xs::VV, multiplicity)::VV where VV <: DenseVector{<:DenseVector}
    return xs
 end
 
+"""
+    batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
+
+Given a collection `Xs` of input sequences, returns a vector of length T whose tᵗʰ element is a D×B matrix of inputs at time t across all sequences in a given batch.
+Here T is the maximum time length in the batch, D is the dimensionality of the input elements of sequences and B is the batch size.
+"""
 function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
-   # Xs must be an iterable, whose each element is a vector of vectors,
-   # and dimensionality of all element vectors must be the same
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
    newT = ceil(Int, maxT / multiplicity)multiplicity
    # initialize & populate padding vector
@@ -308,12 +315,18 @@ function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length
    return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
 end
 
+"""
+    batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
+
+Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction Ŷs, which is assumed to be a vector of length T whose tᵗʰ element is a D×B matrix of predictions at time t across all sequences in a given batch.
+Here T is the maximum time length in the batch, D is the dimensionality of the output and B is the batch size.
+"""
 function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
    batch_size = length(ys)
-   lin_idxs = similar(ys, maxT)
+   linidxs = similar(ys, maxT)
    idxs = similar(first(ys), batch_size)
    offsets = range(0; step=length(PHONEMES), length=batch_size)
-   for t ∈ 1:maxT
+   @views for t ∈ 1:maxT
       n = 0
       for (y, offset) ∈ zip(ys, offsets)
          if t <= length(y)
@@ -321,35 +334,40 @@ function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV
             idxs[n] = offset + y[t]
          end
       end
-      lin_idxs[t] = @view idxs[1:n]
+      linidxs[t] = idxs[1:n]
    end
-   return lin_idxs
+   return linidxs
 end
 
+"""
+    batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
+
+Arranges dataset into batches such that the number of batches approximately equals the ratio of dataset size to `batch_size`.
+Batches are formed by first sorting sequences in the dataset according to their length (which minimizes the total number of elements to pad in inputs) and then partitioning the result into batches such that each batch approximately the same total number of sequence elements (this ensures that each batch takes up the same amount of memory, so as to avoid memory overflow).
+"""
 function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
    sortidxs = sortperm(Xs; by=length)
-   Xs = Xs[sortidxs]
-   ys = ys[sortidxs]
+   Xs, ys = Xs[sortidxs], ys[sortidxs]
 
    cumseqlengths = cumsum(length.(ys))
-   nbatches = floor(Int, length(Xs) / batch_size)
+   nbatches = ceil(Int, length(Xs) / batch_size)
    # subtract 0.5 from the last element of the range
    # to ensure that i index inside the loop won't go out of bounds due to floating point rounding errors
-   cum_n_elts_rng = range(0, cumseqlengths[end]-0.5; length = nbatches+1)[2:end]
+   cum_n_elts_rng = range(0, last(cumseqlengths)-0.5; length = nbatches+1)[2:end]
    lastidxs = similar(sortidxs, nbatches)
    i = 1
-   for (n, cum_n_elts_for_a_batch) ∈ enumerate(cum_n_elts_rng)
-      while cumseqlengths[i] < cum_n_elts_for_a_batch
+   for (n, cum_n_elts_for_batch) ∈ enumerate(cum_n_elts_rng)
+      while cumseqlengths[i] < cum_n_elts_for_batch
          i += 1
       end
       lastidxs[n] = i
    end
    firstidxs = [1; @view(lastidxs[1:(end-1)]) .+ 1]
-   maxTs = length.(@view Xs[lastidxs])
 
+   maxTs = length.(@view Xs[lastidxs])
    xs_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   idxs_batches = [ batch_targets(ys[firstidx:lastidx], maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   return xs_batches, idxs_batches, maxTs
+   linidxs_batches = [ batch_targets(ys[firstidx:lastidx], maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   return xs_batches, linidxs_batches, maxTs
 end
 
 # const las, PHONEMES = let
@@ -400,11 +418,15 @@ const las, PHONEMES = let
    las, PHONEMES
 end
 
-
-function loss(xs::DenseVector{<:DenseMatrix{<:Real}}, indexes::DenseVector{<:DenseVector{<:Integer}})::Real
-   ŷs = las(xs, length(indexes))
-   l = -sum(sum.(getindex.(ŷs, indexes)))
+function loss(xs::DenseVector{<:DenseMatrix{<:Real}}, linidxs::DenseVector{<:DenseVector{<:Integer}})::Real
+   ŷs = las(xs, length(linidxs))
+   l = -sum(sum.(getindex.(ŷs, linidxs)))
    return l
+end
+
+function loss(xs_batches::DenseVector{<:DenseVector{<:DenseMatrix{<:Real}}},
+         linidxs_batches::DenseVector{<:DenseVector{<:DenseVector{<:Integer}}})::Real
+   return sum(loss.(xs_batches, linidxs_batches))
 end
 
 # best path decoding
@@ -423,27 +445,20 @@ end
 
 function main()
 # load data
-Xs_train, ys_train, maxTs_train,
-# Xs_test, ys_test, maxTs_test,
-Xs_val, ys_val, maxT_val =
-let batch_size = 77, val_set_size = 32
-   multiplicity = 2^(length(las.listen) - 1)
+Xs_train, linidxs_train, maxTs_train,
+Xs_val,   linidxs_val,   maxTs_val =
+let batch_size = 77, valsetsize = 344
+   multiplicity = time_squashing_factor(las)
 
    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
-
-   ys_val = ys[1:val_set_size]
-   maxT_val = maximum(length, ys_val)
-   Xs_val = batch_inputs!(Xs[1:val_set_size], multiplicity, maxT_val)
-   ys_val = batch_targets(ys_val, maxT_val)
-
-   Xs_test, ys_test, maxTs_test = batch(Xs[(val_set_size+1):end], ys[(val_set_size+1):end], batch_size, multiplicity)
+   idxs_val = sample(eachindex(Xs), valsetsize; replace=false, ordered=true)
+   Xs_val, linidxs_val, maxTs_val = batch(Xs[idxs_val], ys[idxs_val], batch_size, multiplicity)
 
    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-   Xs_train, ys_train, maxTs_train = batch(Xs, ys, batch_size, multiplicity)
+   Xs_train, linidxs_train, maxTs_train = batch(Xs, ys, batch_size, multiplicity)
 
-   Xs_train, ys_train, maxTs_train,
-   # Xs_test, ys_test, maxTs_test,
-   Xs_val, ys_val, maxT_val
+   Xs_train, linidxs_train, maxTs_train,
+   Xs_val,   linidxs_val,   maxTs_val
 end
 
 global loss_val_saved
@@ -453,9 +468,6 @@ optimiser = ADAM()
 # optimiser = AMSGrad()
 # optimiser = AMSGrad(0.0001)
 # optimiser = AMSGrad(0.00001)
-
-using BenchmarkTools
-@btime loss(Xs_val, ys_val)
 
 xs, ys = last(Xs_train), last(ys_train)
 xs = gpu.(xs)
@@ -497,8 +509,8 @@ end
 # main()
 
 """
-   levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
-   levendist(seq₁::AbstractString, seq₂::AbstractString)::Int
+    levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
+    levendist(seq₁::AbstractString, seq₂::AbstractString)::Int
 
 Levenshtein distance between sequences `seq₁` and `seq₂`.
 """
