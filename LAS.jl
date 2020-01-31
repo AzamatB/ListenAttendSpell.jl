@@ -235,17 +235,6 @@ end
 
 # Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
 
-# function cols2mat(cols::DenseVector{<:DenseVector{T}})::DenseMatrix{T} where {T <: Real}
-#    col₁ = first(cols)
-#    mat = Buffer(col₁, length(col₁), length(cols))
-#    setindex!.(Ref(mat), cols, :, axes(mat, 2))
-#    return copy(mat)
-# end
-
-function energy(ϕs::T, ψh::T) where T <: DenseMatrix{<:Real}
-    return eachcol(ϕs) .⋅ eachcol(ψh)
-end
-
 function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::DenseVector{<:DenseMatrix{<:Real}}
    batch_size = size(first(xs), 2)
    # compute input encoding, which are also values for the attention layer
@@ -264,10 +253,9 @@ function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::D
 
    ŷs = map(1:maxT) do _
       # compute query ϕ(sᵢ)
-      ϕsᵢ = m.attention_ϕ(m.state.decoding)
+      ϕsᵢᵀ = m.attention_ϕ(m.state.decoding)'
       # compute energies
-      # Eᵢs = diag.(Ref(permutedims(ϕsᵢ)) .* ψhs)
-      Eᵢs = energy.(Ref(ϕsᵢ), ψhs)
+      Eᵢs = diag.((ϕsᵢᵀ,) .* ψhs)
       # compute attentions weights
       αᵢs = softmax(hcat(Eᵢs...); dims=2)
       # αᵢs = softmax(cols2mat(Eᵢs); dims=2)
