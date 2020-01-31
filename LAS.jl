@@ -385,21 +385,6 @@ end
 # dim_LSTM_speller = 512
 # initialize with uniform(-0.1, 0.1)
 
-# const las, PHONEMES = let
-#    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
-#
-#    encoder_dims = (
-#       blstm       = (in = 39, out = 2),
-#       pblstms_out = (3, 4, 5)
-#    )
-#    attention_dim = 6
-#    decoder_out_dims = (7, 8)
-#    out_dim = 61
-#
-#    las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
-#    las, PHONEMES
-# end
-
 function loss(m::LAS, xs::DenseVector{<:DenseMatrix{<:Real}}, linidxs::DenseVector{<:DenseVector{<:Integer}})::Real
    ŷs = m(xs, length(linidxs))
    l = -sum(sum.(getindex.(ŷs, linidxs)))
@@ -408,7 +393,7 @@ end
 
 function loss(m::LAS, xs_batches::DenseVector{<:DenseVector{<:DenseMatrix{<:Real}}},
          linidxs_batches::DenseVector{<:DenseVector{<:DenseVector{<:Integer}}})::Real
-   return sum(loss.(m, xs_batches, linidxs_batches))
+   return sum(loss.((m,), xs_batches, linidxs_batches))
 end
 
 # best path decoding
@@ -435,11 +420,17 @@ function main(; saved_results::Bool=false)
       JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
 
       encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
-         pblstms_out = (128, 128, 64)
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
+         pblstms_out = (2, 2, 2)
       )
-      attention_dim = 128
-      decoder_out_dims = (256, 256)
+      attention_dim = 2
+      decoder_out_dims = (2, 2)
+      # encoder_dims = (
+      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
+      #    pblstms_out = (128, 128, 64)
+      # )
+      # attention_dim = 128
+      # decoder_out_dims = (256, 256)
       out_dim = length(PHONEMES)
       las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
 
@@ -468,27 +459,30 @@ function main(; saved_results::Bool=false)
       loss_val_saved = (eltype ∘ eltype ∘ eltype)(Xs_train)(Inf)
    end
 
+   loss_val = loss(las, Xs_val, linidxs_val)
+   @info "Validation loss before start of the training is $loss_val"
+
    n_epochs = 3
    for epoch ∈ 1:n_epochs
-      @info "Starting training for epoch $epoch"
-      duration = @elapsed for (xs, linidxs) ∈ zip(Xs_train, linidxs_train)
+      @info "Starting training epoch $epoch"
+      duration = @elapsed for (n, (xs, linidxs)) ∈ enenumerate(zip(Xs_train, linidxs_train))
          # move current batch to GPU
          xs = gpu.(xs)
          l, pb = Flux.pullback(θ) do
             loss(las, xs, linidxs)
          end
+         println("Loss for a batch # $n is ", l)
          dldθ = pb(one(l))
          Flux.Optimise.update!(optimiser, θ, dldθ)
-         @show l
       end
       duration = round(duration / 60; sigdigits = 2)
-      @info "Finished training for epoch $epoch in $duration minutes"
-      loss_val = loss(las, Xs_val, ys_val)
-      @info "Validation loss after epoch $epoch is $loss_val"
+      @info "Finished training epoch $epoch in $duration minutes"
+      loss_val = loss(las, Xs_val, linidxs_val)
+      @info "Validation loss after training epoch $epoch is $loss_val"
       if loss_val < loss_val_saved
          loss_val_saved = loss_val
          @save "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" las optimiser loss_val_saved
-         @info "Saved training results after epoch $epoch to: /Users/aza/Projects/LAS/models/TIMIT/LAS.jld2"
+         @info "Saved training results after training epoch $epoch to: /Users/aza/Projects/LAS/models/TIMIT/LAS.jld2"
       end
    end
 end
