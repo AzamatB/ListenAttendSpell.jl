@@ -1,4 +1,7 @@
 # Listen, Attend and Spell: arxiv.org/abs/1508.01211
+
+module ListenAttendSpell
+
 # using CuArrays
 # CuArrays.allowscalar(false)
 
@@ -277,8 +280,8 @@ end
 
 function (m::LAS)(xs::DenseVector{<:DenseVector{<:Real}})::DenseVector{<:DenseVector{<:Real}}
    T = length(xs)
-   xs = gpu.(reshape.(pad(xs, 2^(length(m.listen)-1)), :,1))
-   ŷs = dropdims.(las(xs, T); dims=2)
+   xs = gpu.(reshape.(pad(xs, time_squashing_factor(m)), Val(2)))
+   ŷs = dropdims.(m(xs, T); dims=2)
    return ŷs
 end
 
@@ -316,16 +319,16 @@ function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length
 end
 
 """
-    batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
+    batch_targets(ys::VV, output_dim::Integer, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
 
 Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction Ŷs, which is assumed to be a vector of length T whose tᵗʰ element is a D×B matrix of predictions at time t across all sequences in a given batch.
 Here T is the maximum time length in the batch, D is the dimensionality of the output and B is the batch size.
 """
-function batch_targets(ys::VV, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
+function batch_targets(ys::VV, output_dim::Integer, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
    batch_size = length(ys)
    linidxs = similar(ys, maxT)
    idxs = similar(first(ys), batch_size)
-   offsets = range(0; step=length(PHONEMES), length=batch_size)
+   offsets = range(0; step=output_dim, length=batch_size)
    @views for t ∈ 1:maxT
       n = 0
       for (y, offset) ∈ zip(ys, offsets)
@@ -345,7 +348,12 @@ end
 Arranges dataset into batches such that the number of batches approximately equals the ratio of dataset size to `batch_size`.
 Batches are formed by first sorting sequences in the dataset according to their length (which minimizes the total number of elements to pad in inputs) and then partitioning the result into batches such that each batch approximately the same total number of sequence elements (this ensures that each batch takes up the same amount of memory, so as to avoid memory overflow).
 """
-function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
+function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}},
+               ys::DenseVector{<:DenseVector},
+               output_dim::Integer,
+               batch_size::Integer,
+               multiplicity::Integer)
+
    sortidxs = sortperm(Xs; by=length)
    Xs, ys = Xs[sortidxs], ys[sortidxs]
 
@@ -366,147 +374,125 @@ function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:
 
    maxTs = length.(@view Xs[lastidxs])
    xs_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   linidxs_batches = [ batch_targets(ys[firstidx:lastidx], maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   linidxs_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    return xs_batches, linidxs_batches, maxTs
 end
 
-# const las, PHONEMES = let
-#    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
-#    # dim_in = length(first(X))
-#    dim_in = 39
-#    dim_out = length(PHONEMES)
-#    # dim_encoding  = (512, 512, 512, 512)
-#    dim_encoding  = 512
-#    dim_attention = 512 # attention dimension
-#    dim_decoding  = 512
-#    # initialize with uniform(-0.1, 0.1)
-#
-#    dim_feed_forward = 128
-#    dim_LSTM_speller = 512
-#
-#    las = LAS(dim_in, dim_out; dim_encoding=dim_encoding, dim_attention=dim_attention, dim_decoding=dim_decoding)
-#    las, PHONEMES
-# end
+# dim_encoding  = (512, 512, 512, 512)
+# dim_attention = 512
+# dim_decoding  = 512
+# dim_feed_forward = 128
+# dim_LSTM_speller = 512
+# initialize with uniform(-0.1, 0.1)
 
 # const las, PHONEMES = let
 #    JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
 #
 #    encoder_dims = (
-#       blstm       = (in = 39, out = 64),
-#       pblstms_out = (128, 128, 64)
+#       blstm       = (in = 39, out = 2),
+#       pblstms_out = (3, 4, 5)
 #    )
-#    attention_dim = 128
-#    decoder_out_dims = (256, 256)
+#    attention_dim = 6
+#    decoder_out_dims = (7, 8)
 #    out_dim = 61
 #
 #    las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
 #    las, PHONEMES
 # end
 
-const las, PHONEMES = let
-   JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
-
-   encoder_dims = (
-      blstm       = (in = 39, out = 2),
-      pblstms_out = (3, 4, 5)
-   )
-   attention_dim = 6
-   decoder_out_dims = (7, 8)
-   out_dim = 61
-
-   las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
-   las, PHONEMES
-end
-
-function loss(xs::DenseVector{<:DenseMatrix{<:Real}}, linidxs::DenseVector{<:DenseVector{<:Integer}})::Real
-   ŷs = las(xs, length(linidxs))
+function loss(m::LAS, xs::DenseVector{<:DenseMatrix{<:Real}}, linidxs::DenseVector{<:DenseVector{<:Integer}})::Real
+   ŷs = m(xs, length(linidxs))
    l = -sum(sum.(getindex.(ŷs, linidxs)))
    return l
 end
 
-function loss(xs_batches::DenseVector{<:DenseVector{<:DenseMatrix{<:Real}}},
+function loss(m::LAS, xs_batches::DenseVector{<:DenseVector{<:DenseMatrix{<:Real}}},
          linidxs_batches::DenseVector{<:DenseVector{<:DenseVector{<:Integer}}})::Real
-   return sum(loss.(xs_batches, linidxs_batches))
+   return sum(loss.(m, xs_batches, linidxs_batches))
 end
 
 # best path decoding
-function predict(xs::DenseVector{<:DenseMatrix{<:Real}}, lengths::DenseVector{<:Integer}, labels=PHONEMES)::DenseVector{<:DenseVector}
+function predict(m::LAS, xs::DenseVector{<:DenseMatrix{<:Real}}, lengths::DenseVector{<:Integer}, labels)::DenseVector{<:DenseVector}
    maxT = maximum(lengths)
-   Ŷs = las(gpu.(xs), maxT) |> cpu
+   Ŷs = m(gpu.(xs), maxT) |> cpu
    predictions = [onecold(@view(Ŷs[:, 1:len, n]), labels) for (n, len) ∈ enumerate(lengths)]
    return predictions
 end
 
-function predict(xs::DenseVector{<:DenseVector{<:Real}}, labels=PHONEMES)::DenseVector
-   Ŷ = las(xs) |> cpu
+function predict(m::LAS, xs::DenseVector{<:DenseVector{<:Real}}, labels)::DenseVector
+   Ŷ = m(xs) |> cpu
    prediction = onecold(Ŷ, labels)
    return prediction
 end
 
-function main()
-# load data
-Xs_train, linidxs_train, maxTs_train,
-Xs_val,   linidxs_val,   maxTs_val =
-let batch_size = 77, valsetsize = 344
-   multiplicity = time_squashing_factor(las)
-
-   JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
-   idxs_val = sample(eachindex(Xs), valsetsize; replace=false, ordered=true)
-   Xs_val, linidxs_val, maxTs_val = batch(Xs[idxs_val], ys[idxs_val], batch_size, multiplicity)
-
-   JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-   Xs_train, linidxs_train, maxTs_train = batch(Xs, ys, batch_size, multiplicity)
-
+function main(; saved_results::Bool=false)
+   # load data & construct the neural net
+   las, phonemes,
    Xs_train, linidxs_train, maxTs_train,
-   Xs_val,   linidxs_val,   maxTs_val
-end
+   Xs_val,   linidxs_val,   maxTs_val =
+   let batch_size = 77, valsetsize = 344
+      JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
+      JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
 
-global loss_val_saved
-θ = Flux.params(las)
-optimiser = ADAM()
-# optimiser = Flux.RMSProp(0.0001)
-# optimiser = AMSGrad()
-# optimiser = AMSGrad(0.0001)
-# optimiser = AMSGrad(0.00001)
+      encoder_dims = (
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
+         pblstms_out = (128, 128, 64)
+      )
+      attention_dim = 128
+      decoder_out_dims = (256, 256)
+      out_dim = length(PHONEMES)
+      las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
 
-xs, ys = last(Xs_train), last(ys_train)
-xs = gpu.(xs)
-l, pb = Flux.pullback(θ) do
-   loss(xs, ys)
-end
+      multiplicity = time_squashing_factor(las)
+      Xs_train, linidxs_train, maxTs_train = batch(Xs, ys, out_dim, batch_size, multiplicity)
 
-@btime dldθ = pb(one(l))
+      JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+      idxs_val = sample(eachindex(Xs), valsetsize; replace=false, ordered=true)
+      Xs_val, linidxs_val, maxTs_val = batch(Xs[idxs_val], ys[idxs_val], out_dim, batch_size, multiplicity)
 
+      las, PHONEMES,
+      Xs_train, linidxs_train, maxTs_train,
+      Xs_val,   linidxs_val,   maxTs_val
+   end
 
-n_epochs = 2
-for epoch ∈ 1:n_epochs
-   for (xs, ys) ∈ zip(Xs_train, ys_train)
-      xs = gpu.(xs)
-      l, pb = Flux.pullback(θ) do
-         loss(xs, ys)
+   θ = Flux.params(las)
+   optimiser = ADAM()
+   # optimiser = Flux.RMSProp(0.0001)
+   # optimiser = AMSGrad()
+   # optimiser = AMSGrad(0.0001)
+   # optimiser = AMSGrad(0.00001)
+
+   if saved_results
+      JLD2.@load "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" loss_val_saved
+   else
+      loss_val_saved = (eltype ∘ eltype ∘ eltype)(Xs_train)(Inf)
+   end
+
+   n_epochs = 3
+   for epoch ∈ 1:n_epochs
+      @info "Starting training for epoch $epoch"
+      duration = @elapsed for (xs, linidxs) ∈ zip(Xs_train, linidxs_train)
+         # move current batch to GPU
+         xs = gpu.(xs)
+         l, pb = Flux.pullback(θ) do
+            loss(las, xs, linidxs)
+         end
+         dldθ = pb(one(l))
+         Flux.Optimise.update!(optimiser, θ, dldθ)
+         @show l
       end
-      dldθ = pb(1.0f0)
-      Flux.Optimise.update!(optimiser, θ, dldθ)
-      @show l
-   end
-   @info "finished epoch $epoch"
-   @show loss(Xs_eval, ys_eval)
-   loss_val = loss(Xs_val, ys_val)
-   @show loss_val
-   if loss_val < loss_val_saved
-      loss_val_saved = loss_val
-      @save "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" las optimiser loss_val_saved
+      duration = round(duration / 60; sigdigits = 2)
+      @info "Finished training for epoch $epoch in $duration minutes"
+      loss_val = loss(las, Xs_val, ys_val)
+      @info "Validation loss after epoch $epoch is $loss_val"
+      if loss_val < loss_val_saved
+         loss_val_saved = loss_val
+         @save "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" las optimiser loss_val_saved
+         @info "Saved training results after epoch $epoch to: /Users/aza/Projects/LAS/models/TIMIT/LAS.jld2"
+      end
    end
 end
-end
 
-
-const loss_val_saved = let
-   JLD2.@load "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" loss_val_saved
-   loss_val_saved
-end
-
-# main()
 
 """
     levendist(seq₁::AbstractVector, seq₂::AbstractVector)::Int
@@ -568,3 +554,5 @@ levendist(seq₁::AbstractString, seq₂::AbstractString)::Int = levendist(colle
 per(source_phoneme, target_phoneme)::Real = levendist(source_phoneme, target_phoneme)/length(target_phoneme)
 cer(source_chars, target_chars)::Real = levendist(source_chars, target_chars)/length(target_chars)
 wer(source_words, target_words)::Real = levendist(source_words, target_words)/length(target_words)
+
+end # ListenAttendSpell
