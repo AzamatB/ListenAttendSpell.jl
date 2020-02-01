@@ -465,7 +465,7 @@ function main(; saved_results::Bool=false)
    n_epochs = 3
    for epoch ∈ 1:n_epochs
       @info "Starting training epoch $epoch"
-      duration = @elapsed for (n, (xs, linidxs)) ∈ enenumerate(zip(Xs_train, linidxs_train))
+      duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
          # move current batch to GPU
          xs = gpu.(xs)
          l, pb = Flux.pullback(θ) do
