@@ -418,19 +418,18 @@ function main(; saved_results::Bool=false)
    let batch_size = 77, valsetsize = 344
       JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
       JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-
-      encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
-         pblstms_out = (2, 2, 2)
-      )
-      attention_dim = 2
-      decoder_out_dims = (2, 2)
       # encoder_dims = (
-      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
-      #    pblstms_out = (128, 128, 64)
+      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
+      #    pblstms_out = (2, 2, 2)
       # )
-      # attention_dim = 128
-      # decoder_out_dims = (256, 256)
+      # attention_dim = 2
+      # decoder_out_dims = (2, 2)
+      encoder_dims = (
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
+         pblstms_out = (128, 128, 64)
+      )
+      attention_dim = 128
+      decoder_out_dims = (256, 256)
       out_dim = length(PHONEMES)
       las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
 
