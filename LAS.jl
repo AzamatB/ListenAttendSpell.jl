@@ -463,6 +463,7 @@ function main(; saved_results::Bool=false)
    @info "Validation loss before start of the training is $loss_val"
 
    n_epochs = 3
+   nds = ndigits(length(Xs_train))
    for epoch ∈ 1:n_epochs
       @info "Starting training epoch $epoch"
       duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
@@ -471,7 +472,7 @@ function main(; saved_results::Bool=false)
          l, pb = Flux.pullback(θ) do
             loss(las, xs, linidxs)
          end
-         println("Loss for a batch # $n is ", l)
+         println("Loss for a batch # ", ' '^(nds - ndigits(n)), n, " is ", l)
          dldθ = pb(one(l))
          Flux.Optimise.update!(optimiser, θ, dldθ)
       end
