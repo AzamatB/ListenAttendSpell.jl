@@ -476,7 +476,7 @@ function main(; saved_results::Bool=false)
          dldθ = pb(one(l))
          Flux.Optimise.update!(optimiser, θ, dldθ)
       end
-      duration = round(duration / 60; sigdigits = 2)
+      duration = round(duration / 60; sigdigits = 1)
       @info "Finished training epoch $epoch in $duration minutes"
       loss_val = loss(las, Xs_val, linidxs_val)
       @info "Validation loss after training epoch $epoch is $loss_val"
