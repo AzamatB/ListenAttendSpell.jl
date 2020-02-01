@@ -1,5 +1,5 @@
-include("/Users/aza/Projects/LAS/ListenAttendSpell/LAS.jl")
+include("LAS.jl")
 
 using .ListenAttendSpell
 
-ListenAttendSpell.main(saved_results = false)
+main(n_epochs=5, saved_results=false)

@@ -15,6 +15,8 @@ using IterTools
 using Base.Iterators: reverse
 using StatsBase
 
+export main
+
 # Bidirectional LSTM
 struct BLSTM{L}
    forward  :: L
@@ -410,61 +412,60 @@ function predict(m::LAS, xs::DenseVector{<:DenseVector{<:Real}}, labels)::DenseV
    return prediction
 end
 
-function main(; saved_results::Bool=false)
+function main(; n_epochs::Integer=1, saved_results::Bool=false)
    # load data & construct the neural net
-   las, phonemes,
+   las, optimiser, phonemes,
    Xs_train, linidxs_train, maxTs_train,
    Xs_val,   linidxs_val,   maxTs_val =
    let batch_size = 77, valsetsize = 344
-      JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" PHONEMES
-      JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld" Xs ys
-      # encoder_dims = (
-      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
-      #    pblstms_out = (2, 2, 2)
-      # )
-      # attention_dim = 2
-      # decoder_out_dims = (2, 2)
-      encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
-         pblstms_out = (128, 128, 64)
-      )
-      attention_dim = 128
-      decoder_out_dims = (256, 256)
+      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys
+      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" PHONEMES
       out_dim = length(PHONEMES)
-      las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
+
+      if saved_results
+         JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
+      else
+         # encoder_dims = (
+         #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
+         #    pblstms_out = (2, 2, 2)
+         # )
+         # attention_dim = 2
+         # decoder_out_dims = (2, 2)
+         encoder_dims = (
+            blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
+            pblstms_out = (128, 128, 64)
+         )
+         attention_dim = 128
+         decoder_out_dims = (256, 256)
+         las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
+         optimiser = RMSProp()
+      end
 
       multiplicity = time_squashing_factor(las)
       Xs_train, linidxs_train, maxTs_train = batch(Xs, ys, out_dim, batch_size, multiplicity)
 
-      JLD2.@load "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld" Xs ys
+      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
       idxs_val = sample(eachindex(Xs), valsetsize; replace=false, ordered=true)
       Xs_val, linidxs_val, maxTs_val = batch(Xs[idxs_val], ys[idxs_val], out_dim, batch_size, multiplicity)
 
-      las, PHONEMES,
+      las, optimiser, PHONEMES,
       Xs_train, linidxs_train, maxTs_train,
       Xs_val,   linidxs_val,   maxTs_val
    end
 
    θ = Flux.params(las)
-   optimiser = ADAM()
-   # optimiser = Flux.RMSProp(0.0001)
+   # optimiser = ADAM()
+   # optimiser = RMSProp()
    # optimiser = AMSGrad()
    # optimiser = AMSGrad(0.0001)
    # optimiser = AMSGrad(0.00001)
 
-   if saved_results
-      JLD2.@load "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" loss_val_saved
-   else
-      loss_val_saved = (eltype ∘ eltype ∘ eltype)(Xs_train)(Inf)
-   end
+   loss_val_saved = loss(las, Xs_val, linidxs_val)
+   @info "Validation loss before start of the training is $loss_val_saved"
 
-   loss_val = loss(las, Xs_val, linidxs_val)
-   @info "Validation loss before start of the training is $loss_val"
-
-   n_epochs = 3
    nds = ndigits(length(Xs_train))
    for epoch ∈ 1:n_epochs
-      @info "Starting training epoch $epoch"
+      @info "Starting to train epoch $epoch"
       duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
          # move current batch to GPU
          xs = gpu.(xs)
@@ -476,13 +477,13 @@ function main(; saved_results::Bool=false)
          Flux.Optimise.update!(optimiser, θ, dldθ)
       end
       duration = round(duration / 60; sigdigits = 1)
-      @info "Finished training epoch $epoch in $duration minutes"
+      @info "Completed training epoch $epoch in $duration minutes"
       loss_val = loss(las, Xs_val, linidxs_val)
       @info "Validation loss after training epoch $epoch is $loss_val"
       if loss_val < loss_val_saved
          loss_val_saved = loss_val
-         @save "/Users/aza/Projects/LAS/models/TIMIT/LAS.jld2" las optimiser loss_val_saved
-         @info "Saved training results after training epoch $epoch to: /Users/aza/Projects/LAS/models/TIMIT/LAS.jld2"
+         JLD2.@save "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
+         @info "Saved results after training epoch $epoch to ListenAttendSpell/models/TIMIT/las.jld2"
       end
    end
 end

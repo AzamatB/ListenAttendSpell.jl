@@ -1,7 +1,6 @@
 # using CuArrays
 using WAV
 using MFCC
-using Flux: onehotbatch
 using JLD2
 using Base.Iterators
 using IterTools
@@ -41,8 +40,8 @@ const FOLDINGS = Dict(
    "ux" => "uw"
 )
 
-const WINDOW = 0.025 # ms
-const STEP = 0.010 # ms
+const WINDOW = 0.025 # s
+const STEP   = 0.010 # s
 
 """
    build_features(wavfile::AbstractString, phnfile::AbstractString)
@@ -114,9 +113,8 @@ function build_dataset(dir_data::AbstractString, path_out::AbstractString; Δord
          build_features(wavfilepath, phnfilepath, Δorder)
       end
    end
-   # Xs, ys = fieldarrays(StructArray(Xys))
-   Xs = [X for (X, _) ∈ Xys]
-   ys = [y for (_, y) ∈ Xys]
+   Xs = first.(Xys)
+   ys = last.(Xys)
 
    ispath(path_out) || mkpath(dirname(path_out))
    JLD2.@save path_out Xs ys PHONEMES
@@ -124,11 +122,11 @@ function build_dataset(dir_data::AbstractString, path_out::AbstractString; Δord
 end
 
 
-const DIR_DATA_TEST  = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_wav/TEST"
-const PATH_OUT_TEST   = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_test.jld"
+const DIR_DATA_TEST  = "data/TIMIT/TIMIT_wav/TEST"
+const PATH_OUT_TEST  = "data/TIMIT/TIMIT_MFCC/data_test.jld2"
 
-const DIR_DATA_TRAIN = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_wav/TRAIN"
-const PATH_OUT_TRAIN  = "/Users/aza/Projects/LAS/data/TIMIT/TIMIT_MFCC/data_train.jld"
+const DIR_DATA_TRAIN = "data/TIMIT/TIMIT_wav/TRAIN"
+const PATH_OUT_TRAIN = "data/TIMIT/TIMIT_MFCC/data_train.jld2"
 
 @time build_dataset(DIR_DATA_TEST, PATH_OUT_TEST)
 @time build_dataset(DIR_DATA_TRAIN, PATH_OUT_TRAIN)
