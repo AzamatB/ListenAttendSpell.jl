@@ -438,7 +438,6 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
          attention_dim = 128
          decoder_out_dims = (256, 256)
          las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
-         optimiser = RMSProp()
       end
 
       multiplicity = time_squashing_factor(las)
@@ -454,11 +453,11 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
    end
 
    θ = Flux.params(las)
-   # optimiser = ADAM()
-   # optimiser = RMSProp()
+   optimiser = ADAM()
    # optimiser = AMSGrad()
    # optimiser = AMSGrad(0.0001)
    # optimiser = AMSGrad(0.00001)
+   # optimiser = RMSProp()
 
    loss_val_saved = loss(las, Xs_val, linidxs_val)
    @info "Validation loss before start of the training is $loss_val_saved"
