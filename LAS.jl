@@ -414,7 +414,7 @@ end
 
 function main(; n_epochs::Integer=1, saved_results::Bool=false)
    # load data & construct the neural net
-   las, optimiser, phonemes,
+   las, phonemes,
    Xs_train, linidxs_train, maxTs_train,
    Xs_val,   linidxs_val,   maxTs_val =
    let batch_size = 77, valsetsize = 344
@@ -447,7 +447,7 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
       idxs_val = sample(eachindex(Xs), valsetsize; replace=false, ordered=true)
       Xs_val, linidxs_val, maxTs_val = batch(Xs[idxs_val], ys[idxs_val], out_dim, batch_size, multiplicity)
 
-      las, optimiser, PHONEMES,
+      las, PHONEMES,
       Xs_train, linidxs_train, maxTs_train,
       Xs_val,   linidxs_val,   maxTs_val
    end
