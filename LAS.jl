@@ -451,9 +451,10 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
    end
 
    θ = Flux.params(las)
-   # 1. optimiser = RMSProp()
-   # 2. optimiser = ADAM()
-   optimiser = ADAM(0.0002)
+   # 1. optimiser = RMSProp()    # 5 epochs
+   # 2. optimiser = ADAM()       # 2 epochs
+   # 3. optimiser = ADAM(0.0002) # 1 epoch
+   optimiser = RMSProp(0.0001)   # 2 epochs
    # optimiser = AMSGrad()
    # optimiser = AMSGrad(0.0001)
    # optimiser = AMSGrad(0.00001)
