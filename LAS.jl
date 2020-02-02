@@ -14,8 +14,6 @@ using JLD2
 using IterTools
 using Base.Iterators: reverse
 
-export main
-
 # Bidirectional LSTM
 struct BLSTM{L}
    forward  :: L
@@ -236,7 +234,10 @@ end
 
 # Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
 
-time_squashing_factor(m::LAS)::Integer = 2^(length(m.listen) - 1)
+function time_squashing_factor(m::LAS)::Integer
+   return 2^(length(m.listen) - 1)
+end
+
 
 function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::DenseVector{<:DenseMatrix{<:Real}}
    batch_size = size(first(xs), 2)
