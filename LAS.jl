@@ -13,7 +13,6 @@ using LinearAlgebra
 using JLD2
 using IterTools
 using Base.Iterators: reverse
-using StatsBase
 
 export main
 
@@ -418,8 +417,7 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
    Xs_train, linidxs_train, maxTs_train,
    Xs_val,   linidxs_val,   maxTs_val =
    let batch_size = 77, valsetsize = 344
-      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys
-      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" PHONEMES
+      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
       out_dim = length(PHONEMES)
 
       if saved_results
@@ -444,8 +442,7 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
       Xs_train, linidxs_train, maxTs_train = batch(Xs, ys, out_dim, batch_size, multiplicity)
 
       JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
-      idxs_val = sample(eachindex(Xs), valsetsize; replace=false, ordered=true)
-      Xs_val, linidxs_val, maxTs_val = batch(Xs[idxs_val], ys[idxs_val], out_dim, batch_size, multiplicity)
+      Xs_val, linidxs_val, maxTs_val = batch(Xs[1:valsetsize], ys[1:valsetsize], out_dim, batch_size, multiplicity)
 
       las, PHONEMES,
       Xs_train, linidxs_train, maxTs_train,
@@ -453,11 +450,12 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
    end
 
    θ = Flux.params(las)
-   optimiser = ADAM()
+   # 1. optimiser = RMSProp()
+   # 2. optimiser = ADAM()
+   optimiser = ADAM(0.0002)
    # optimiser = AMSGrad()
    # optimiser = AMSGrad(0.0001)
    # optimiser = AMSGrad(0.00001)
-   # optimiser = RMSProp()
 
    loss_val_saved = loss(las, Xs_val, linidxs_val)
    @info "Validation loss before start of the training is $loss_val_saved"
