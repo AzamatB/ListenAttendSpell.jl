@@ -2,4 +2,4 @@ include("LAS.jl")
 
 using .ListenAttendSpell
 
-main(n_epochs=5, saved_results=false)
+main(n_epochs=2, saved_results=true)
