@@ -8,13 +8,27 @@ module ListenAttendSpell
 using Flux
 using Flux: reset!, onecold, @functor
 using Zygote
-using Zygote: Buffer
+using Zygote: Buffer, @adjoint
 using LinearAlgebra
 using JLD2
 using IterTools
 using Base.Iterators: reverse
+using OMEinsum#master
 
-# Bidirectional LSTM
+@adjoint function reduce(::typeof(hcat), As::AbstractVector{<:AbstractVecOrMat})
+    cumsizes = cumsum(size.(As, 2))
+    return reduce(hcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_horz(sz, Δ, A), cumsizes, As))
+end
+@adjoint function reduce(::typeof(vcat), As::AbstractVector{<:AbstractVecOrMat})
+    cumsizes = cumsum(size.(As, 1))
+    return reduce(vcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_vert(sz, Δ, A), cumsizes, As))
+end
+
+"""
+    BLSTM(in::Integer, out::Integer)
+
+Constructs a bidirectional LSTM layer.
+"""
 struct BLSTM{L}
    forward  :: L
    backward :: L
@@ -32,23 +46,52 @@ end
 Base.show(io::IO, l::BLSTM)  = print(io,  "BLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
 
 function flip(f, xs)
-   flipped_xs = Buffer(xs)
-   @inbounds for t ∈ reverse(eachindex(xs))
-      flipped_xs[t] = f(xs[t])
-   end
-   return copy(flipped_xs)
+   rev_time = reverse(eachindex(xs))
+   return getindex.(Ref(f.(getindex.(Ref(xs), rev_time))), rev_time)
+   # the same as
+   # flipped_xs = Buffer(xs)
+   # @inbounds for t ∈ rev_time
+   #    flipped_xs[t] = f(xs[t])
+   # end
+   # return copy(flipped_xs)
+   # but implemented via broadcasting as Zygote differentiates loops much slower than broadcasting
 end
 
-(m::BLSTM)(xs::DenseVector{<:DenseVecOrMat})::DenseVector{<:DenseVecOrMat} =
-   vcat.(m.forward.(xs), flip(m.backward, xs))
+"""
+    (m::BLSTM)(xs::DenseVector{<:DenseVecOrMat}) -> DenseVector{<:DenseVecOrMat}
 
-function (m::BLSTM)(Xs::T)::T where T <: DenseArray{<:Real,3}
+Forward pass of the bidirectional LSTM layer for a vector of matrices input.
+Input must be a vector of length T (time duration), whose each element is a matrix of size D×B (input dimension × # of batches).
+"""
+function (m::BLSTM)(xs::VM)::VM where VM <: DenseVector
+   vcat.(m.forward.(xs), flip(m.backward, xs))
+end
+
+"""
+    (m::BLSTM)(Xs::DenseArray{<:Real,3}) -> DenseArray{<:Real,3}
+
+Forward pass of the bidirectional LSTM layer for a 3D tensor input.
+Input tensor must be arranged in D×T×B (input dimension × time duration × # batches) order.
+"""
+function (m::BLSTM)(Xs::T₃)::T₃ where T₃ <: DenseArray{<:Real,3}
+   # preallocate output buffer
    Ys = Buffer(Xs, 2m.dim_out, size(Xs,2), size(Xs,3))
-   slice_f = axes(Ys,1)[1:m.dim_out]
-   slice_b = axes(Ys,1)[(m.dim_out+1):end]
-   @inbounds @views for (t_f, t_b) ∈ zip(axes(Xs,3), reverse(axes(Xs,3)))
-      Ys[slice_f,:,t_f] = m.forward(Xs[:,:,t_f])
-      Ys[slice_b,:,t_b] = m.backward(Xs[:,:,t_b])
+   axisYs₁ = axes(Ys, 1)
+   time    = axes(Ys, 2)
+   rev_time = reverse(time)
+   @inbounds begin
+      # get forward and backward slice indices
+      slice_f = axisYs₁[1:m.dim_out]
+      slice_b = axisYs₁[(m.dim_out+1):end]
+      # bidirectional run step
+      setindex!.(Ref(Ys),  m.forward.(view.(Ref(Xs), :, time, :)), Ref(slice_f), time, :)
+      setindex!.(Ref(Ys), m.backward.(view.(Ref(Xs), :, rev_time, :)), Ref(slice_b), rev_time, :)
+      # the same as
+      # @views for (t_f, t_b) ∈ zip(time, rev_time)
+      #    Ys[slice_f, t_f, :] =  m.forward(Xs[:, t_f, :])
+      #    Ys[slice_b, t_b, :] = m.backward(Xs[:, t_b, :])
+      # end
+      # but implemented via broadcasting as Zygote differentiates loops much slower than broadcasting
    end
    return copy(Ys)
 end
@@ -58,7 +101,7 @@ end
 """
     PBLSTM(in::Integer, out::Integer)
 
-Pyramidal BLSTM is the same as BLSTM, with the addition that the outputs of BLSTM are concatenated at every two consecutive steps.
+Constructs pyramid BLSTM layer, which is the same as the BLSTM layer, with the addition that the input is first concatenated at every two consecutive time steps before feeding it to the usual BLSTM layer.
 """
 struct PBLSTM{L}
    forward  :: L
@@ -69,35 +112,62 @@ end
 @functor PBLSTM (forward, backward)
 
 function PBLSTM(in::Integer, out::Integer)
-   forward  = LSTM(in, out)
-   backward = LSTM(in, out)
+   forward  = LSTM(2in, out)
+   backward = LSTM(2in, out)
    return PBLSTM(forward, backward, out)
 end
 
-Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
+Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2)÷2, ", ", l.dim_out, ")")
 
-@views function (m::PBLSTM)(xs::DenseVector{<:DenseVecOrMat})::DenseVector{<:DenseVecOrMat}
-   ys = vcat.(m.forward.(xs), flip(m.backward, xs))
-   # restack step
-   # return @inbounds(vcat.(ys[1:2:end], ys[2:2:end]))
-   return [@inbounds vcat(ys[i-1], ys[i]) for i ∈ 2:2:lastindex(ys)]
+"""
+    (m::PBLSTM)(xs::DenseVector{<:DenseVecOrMat}) -> DenseVector{<:DenseVecOrMat}
+
+Forward pass of the pyramid BLSTM layer for a vector of matrices input.
+Input must be a vector of length T (time duration), whose each element is a matrix of size D×B (input dimension × # of batches).
+"""
+function (m::PBLSTM)(xs::VM)::VM where VM <: DenseVector
+   # reduce time duration by half by restacking consecutive pairs of input along the time dimension
+   xxs = [@inbounds [xs[i-1]; xs[i]] for i ∈ 2:2:lastindex(xs)]
+   # counterintuitively the gradient of the following version is not much faster (on par in fact),
+   # even though it is implemented via broadcasting
+   # xxs = vcat.(getindex.(Ref(xs), 1:2:lastindex(xs)), getindex.(Ref(xs), 2:2:lastindex(xs)))
+   # xxs = @views @inbounds(vcat.(xs[1:2:end], xs[2:2:end]))
+   # xxs = vcat.(xs[1:2:end], xs[2:2:end])
+   # bidirectional run step
+   return vcat.(m.forward.(xxs), flip(m.backward, xxs))
 end
 
-function (m::PBLSTM)(Xs::T)::T where T <: DenseArray{<:Real,3}
-   Ys = Buffer(Xs, 4m.dim_out, size(Xs,2), size(Xs,3) ÷ 2)
-   slice_f_odd  = axes(Ys, 1)[1:m.dim_out]
-   slice_b_odd  = axes(Ys, 1)[(m.dim_out+1):(2m.dim_out)]
-   slice_f_even = axes(Ys, 1)[(2m.dim_out+1):(3m.dim_out)]
-   slice_b_even = axes(Ys, 1)[(3m.dim_out+1):end]
+"""
+    (m::PBLSTM)(Xs::DenseArray{<:Real,3}) -> DenseArray{<:Real,3}
 
-   @inbounds @views for t ∈ axes(Ys, 3)
-      Ys[slice_f_odd,:,t]  = m.forward(Xs[:,:,2t-1])
-      Ys[slice_f_even,:,t] = m.forward(Xs[:,:,2t])
-      Ys[slice_b_odd,:,t]  = m.backward(Xs[:,:,end-2t+2])
-      Ys[slice_b_even,:,t] = m.backward(Xs[:,:,end-2t+1])
-   end
+Forward pass of the pyramid BLSTM layer for a 3D tensor input.
+Input tensor must be arranged in D×T×B (input dimension × time duration × # batches) order.
+"""
+function (m::PBLSTM)(Xs::T₃)::T₃ where T₃ <: DenseArray{<:Real,3}
+   D, T, B = size(Xs)
+   T½ = T÷2
+   # reduce time duration by half by restacking consecutive pairs of input along the time dimension
+   XXs = reshape(Xs, 2D, T½, B)
+   # preallocate output buffer
+   Ys = Buffer(Xs, 2m.dim_out, T½, B)
+   axisYs₁ = axes(Ys, 1)
+   time    = axes(Ys, 2)
+   rev_time = reverse(time)
+   # get forward and backward slice indices
+   slice_f = axisYs₁[1:m.dim_out]
+   slice_b = axisYs₁[(m.dim_out+1):end]
+   # bidirectional run step
+   setindex!.(Ref(Ys),  m.forward.(view.(Ref(XXs), :, time, :)), Ref(slice_f), time, :)
+   setindex!.(Ref(Ys), m.backward.(view.(Ref(XXs), :, rev_time, :)), Ref(slice_b), rev_time, :)
+   # the same as
+   # @views for (t_f, t_b) ∈ zip(time, reverse(time))
+   #    Ys[slice_f, t_f, :] =  m.forward(XXs[:, t_f, :])
+   #    Ys[slice_b, t_b, :] = m.backward(XXs[:, t_b, :])
+   # end
+   # but implemented via broadcasting as Zygote differentiates loops much slower than broadcasting
    return copy(Ys)
 end
+
 
 # Flux.reset!(m::PBLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @functor
 
@@ -119,9 +189,9 @@ Chain(BLSTM(4, 8), PBLSTM(16, 12), PBLSTM(48, 16), PBLSTM(64, 20))
 ```
 """
 function Encoder(dims::NamedTuple{(:blstm, :pblstms_out),Tuple{NamedTuple{(:in, :out),Tuple{Int,Int}}, T}}) where T <: Union{Int, NTuple{N,Int} where N}
-   (length(dims.pblstms_out) >= 1) || throw("Encoder must have at least 1 pyramidal BLSTM layer")
+   (length(dims.pblstms_out) >= 1) || throw("Encoder must have at least 1 pyramid BLSTM layer")
 
-   pblstm_layers = ( PBLSTM(4in, out) for (in, out) ∈ partition(dims.pblstms_out, 2, 1) )
+   pblstm_layers = ( PBLSTM(2in, out) for (in, out) ∈ partition(dims.pblstms_out, 2, 1) )
    model = Chain(
       BLSTM(dims.blstm.in, dims.blstm.out),
       PBLSTM(2dims.blstm.out, first(dims.pblstms_out)),
@@ -159,7 +229,7 @@ function Decoder(in::Integer, out::Union{Integer, NTuple{N,Integer} where N})
    return model
 end
 
-CharacterDistribution(in::Integer, out::Integer; applylog::Bool=true) = Chain(Dense(in, out), applylog ? logsoftmax : softmax)
+CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoftmax)
 
 mutable struct State{M <: DenseMatrix{<:Real}}
    context     :: M   # last attention context
@@ -169,6 +239,7 @@ mutable struct State{M <: DenseMatrix{<:Real}}
    context₀    :: M
    decoding₀   :: M
    prediction₀ :: M
+   dim         :: Int
 end
 
 @functor State (context₀, decoding₀, prediction₀)
@@ -177,7 +248,8 @@ function State(dim_c::Integer, dim_d::Integer, dim_p::Integer)
    context₀    = zeros(Float32, dim_c, 1)
    decoding₀   = zeros(Float32, dim_d, 1)
    prediction₀ = zeros(Float32, dim_p, 1)
-   return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀)
+   dim = dim_c + dim_d + dim_p
+   return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀, dim)
 end
 
 Base.show(io::IO, s::State) = print(io, "State(", size(s.context, 1), ", ", size(s.decoding, 1), ", ", size(s.prediction, 1), ")")
@@ -191,11 +263,11 @@ end
 
 struct LAS{V, E, Aϕ, Aψ, D, C}
    state       :: State{V} # current state of the model
-   listen      :: E   # encoder function
-   attention_ψ :: Aψ  # keys attention context function
-   attention_ϕ :: Aϕ  # query attention context function
-   spell       :: D   # LSTM decoder
-   infer       :: C   # character distribution inference function
+   listen      :: E        # encoder function
+   attention_ψ :: Aψ       # keys attention context function
+   attention_ϕ :: Aϕ       # query attention context function
+   spell       :: D        # LSTM decoder
+   infer       :: C        # character distribution inference function
 end
 
 @functor LAS
@@ -205,7 +277,7 @@ function LAS(encoder_dims::NamedTuple,
              decoder_out_dims::Tuple{Integer,Integer},
              out_dim::Integer)
 
-   dim_encoding = 4last(encoder_dims.pblstms_out)
+   dim_encoding = 2last(encoder_dims.pblstms_out)
    dim_decoding =  last(decoder_out_dims)
 
    state       = State(dim_encoding, dim_decoding, out_dim)
@@ -217,6 +289,15 @@ function LAS(encoder_dims::NamedTuple,
 
    las = LAS(state, listen, attention_ψ, attention_ϕ, spell, infer) |> gpu
    return las
+end
+
+function LAS(encoder_dims::NamedTuple,
+             attention_dim::Integer,
+             decoder_out_dim::Integer,
+             out_dim::Integer)
+   decoder_out_dim₁ = last(encoder_dims.pblstms_out) + decoder_out_dim + out_dim÷2
+   decoder_out_dims = (decoder_out_dim₁, decoder_out_dim)
+   LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
 end
 
 function Base.show(io::IO, m::LAS)
@@ -234,48 +315,56 @@ end
 
 # Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
 
-function time_squashing_factor(m::LAS)::Integer
-   return 2^(length(m.listen) - 1)
-end
+time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-
-function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::DenseVector{<:DenseMatrix{<:Real}}
-   batch_size = size(first(xs), 2)
-   # compute input encoding, which are also values for the attention layer
-   hs = m.listen(xs)
-   # concatenate sequence of D×N matrices into ssingle D×N×T 3-dimdimensional array
-   h = first(hs)
-   Hs_buffer = Buffer(h, size(h,1), batch_size, length(hs))
-   setindex!.(Ref(Hs_buffer), hs, :, :, axes(Hs_buffer, 3))
-   Hs = copy(Hs_buffer)
-   # Hs = cat(hs...; dims=3)
-   # precompute keys ψ(H)
-   ψhs = m.attention_ψ.(hs)
-   # compute inital decoder state for a batch
-   O = gpu(zeros(Float32, size(m.state.decoding, 1), batch_size))
-   m.state.decoding = m.state.decoding .+ O
-
+@inline function decode(m::LAS, Hs::DenseArray{R,3}, maxT::Integer) where {R <: Real}
+   batch_size = size(Hs, 3)
+   # precompute keys ψ(H) by gluing the slices of Hs along the batch dimension into a single D×TB matrix, then
+   # passing it through the ψ dense layer in a single pass and then reshaping the result back into D′×T×B tensor
+   ψHs = reshape(m.attention_ψ(reshape(Hs, size(Hs,1), :)), size(m.attention_ψ.W, 1), :, batch_size)
+   # ψhs = m.attention_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
+   # check: all(ψhs .≈ eachslice(ψHs; dims=2))
+   # batchify state, i.e. initialize a state for each sequence in the batch
+   m.state.decoding   = m.state.decoding   .+ gpu(zeros(R, size(m.state.decoding, 1),   batch_size))
+   m.state.prediction = m.state.prediction .+ gpu(zeros(R, size(m.state.prediction, 1), batch_size))
+   m.state.context    = m.state.context    .+ gpu(zeros(R, size(m.state.context, 1),    batch_size))
    ŷs = map(1:maxT) do _
-      # compute query ϕ(sᵢ)
-      ϕsᵢᵀ = m.attention_ϕ(m.state.decoding)'
-      # compute energies
-      Eᵢs = diag.((ϕsᵢᵀ,) .* ψhs)
-      # compute attentions weights
-      αᵢs = softmax(hcat(Eᵢs...); dims=2)
-      # αᵢs = softmax(hcat(Eᵢs...)')
-      # αᵢs = softmax(reduce(hcat, Eᵢs); dims=2)
-      # αᵢs = softmax(reduce(hcat, Eᵢs)')
-      # αᵢs = softmax(vcat(Eᵢs'...))
-      # αᵢs = softmax(reduce(vcat, Eᵢs'))
-      # compute attended context by normalizing values with respect to attention weights, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
-      # hcat(@inbounds([sum(αᵢs[b,u] * hs[u][:,b] for u ∈ eachindex(hs)) for b ∈ axes(αᵢs, 1)])...)
-      m.state.context = dropdims(sum(reshape(αᵢs, 1, batch_size, :) .* Hs; dims=3); dims=3)
-      # predict probability distribution over character alphabet
-      m.state.prediction = m.infer([m.state.decoding; m.state.context])
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
-      return m.state.prediction
+      # compute query ϕ(sᵢ)
+      ϕsᵢ = m.attention_ϕ(m.state.decoding)
+      # compute energies via batch matrix multiplication
+      @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
+      # check: Eᵢs ≈ reduce(hcat, diag.((ϕsᵢ',) .* ψhs))'
+      # compute attentions weights
+      αᵢs = softmax(Eᵢs)
+      # compute attended context using Einstein summation convention, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
+      @ein m.state.context[d,b] := αᵢs[t,b] * Hs[d,t,b]
+      # check: m.state.context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
+      # predict probability distribution over character alphabet
+      m.state.prediction = m.infer([m.state.decoding; m.state.context])
    end
+   return ŷs
+end
+
+function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))
+   # compute input encoding, which are also values for the attention layer
+   hs = m.listen(xs)
+   dim_out, batch_size = size(first(hs))
+   # transform T-length sequence of D×B matrices into the D×T×B tensor by first conconcatenating matrices
+   # along the 1st dimension and to get singe DT×B matrix and then reshaping it into D×T×B tensor
+   Hs = reshape(reduce(vcat, hs), dim_out, :, batch_size)
+   # perform attend and spell steps
+   ŷs = decode(m, Hs, maxT)
+   reset!(m)
+   return ŷs
+end
+
+function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))
+   # compute input encoding, which are also values for the attention layer
+   Hs = m.listen(Xs)
+   # perform attend and spell steps
+   ŷs = decode(m, Hs, maxT)
    reset!(m)
    return ŷs
 end
@@ -286,7 +375,6 @@ function (m::LAS)(xs::DenseVector{<:DenseVector{<:Real}})::DenseVector{<:DenseVe
    ŷs = dropdims.(m(xs, T); dims=2)
    return ŷs
 end
-
 
 function pad(xs::VV, multiplicity)::VV where VV <: DenseVector{<:DenseVector}
    T = length(xs)
@@ -299,6 +387,28 @@ function pad(xs::VV, multiplicity)::VV where VV <: DenseVector{<:DenseVector}
 end
 
 """
+    tensor2vecofmats(Xs::DenseArray{<:Real,3}) -> Vector{<:DenseVecOrMat}
+
+Given a 3D tensor `Xs` of dimensions D×T×B, constructs a vector of length T of D×B slices of `Xs` along the second dimension.
+"""
+tensor2vecofmats(Xs::DenseArray{<:Real,3}) = [Xs[:,t,:] for t ∈ axes(Xs, 2)]
+
+"""
+    vecofmats2tensor(xs::DenseVector{<:DenseVecOrMat}) -> DenseArray{<:Real,3}
+
+Constructs a 3D tensor of dimensions D×T×B by concatenating along the second dimension the elements of the input vector `xs` of length T, whose each element is a D×B matrix.
+"""
+function vecofmats2tensor(xs::DenseVector{<:DenseVecOrMat})
+   x₁ = first(xs)
+   D, B = size(x₁)
+   Xs = similar(x₁, D, length(xs), B)
+   @inbounds for t ∈ eachindex(xs)
+      Xs[:,t,:] = xs[t]
+   end
+   return Xs
+end
+
+"""
     batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
 
 Given a collection `Xs` of input sequences, returns a vector of length T whose tᵗʰ element is a D×B matrix of inputs at time t across all sequences in a given batch.
@@ -308,7 +418,7 @@ function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
    newT = ceil(Int, maxT / multiplicity)multiplicity
    # initialize & populate padding vector
-   z = similar(first(first(Xs)))
+   z = (similar ∘ first ∘ first)(Xs)
    fill!(z, zero(eltype(z)))
    # resize each sequence `xs` to the size `newT` by paddding it with vector z of zeros
    for xs ∈ Xs
@@ -429,14 +539,14 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
          #    pblstms_out = (2, 2, 2)
          # )
          # attention_dim = 2
-         # decoder_out_dims = (2, 2)
+         # decoder_out_dim = 2
          encoder_dims = (
-            blstm       = (in = (length ∘ first ∘ first)(Xs), out = 64),
-            pblstms_out = (128, 128, 64)
+            blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
+            pblstms_out = (128, 128, 128)
          )
-         attention_dim = 128
-         decoder_out_dims = (256, 256)
-         las = LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
+         attention_dim   = 128
+         decoder_out_dim = 128
+         las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
       end
 
       multiplicity = time_squashing_factor(las)
@@ -451,11 +561,12 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
    end
 
    θ = Flux.params(las)
-   # 1. optimiser = RMSProp()    # 5 epochs
-   # 2. optimiser = ADAM()       # 2 epochs
-   # 3. optimiser = ADAM(0.0002) # 1 epoch
-   optimiser = RMSProp(0.0001)   # 2 epochs
-   # optimiser = AMSGrad()
+   # 1. optimiser = RMSProp()       # 5 epochs
+   # 2. optimiser = ADAM()          # 2 epochs
+   # 3. optimiser = ADAM(0.0002)    # 1 epoch
+   # 4. optimiser = RMSProp(0.0001) # 2 epochs
+   optimiser = NADAM(0.0001)     # 2 epochs
+   # optimiser = AMSGrad(0.0001)       # 2 epoch
    # optimiser = AMSGrad(0.0001)
    # optimiser = AMSGrad(0.00001)
 
@@ -464,7 +575,8 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
 
    nds = ndigits(length(Xs_train))
    for epoch ∈ 1:n_epochs
-      @info "Starting to train epoch $epoch"
+      @info "Starting to train epoch $epoch with optimiser $(typeof(optimiser))$(getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))"
+      println(typeof(optimiser), getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))
       duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
          # move current batch to GPU
          xs = gpu.(xs)
