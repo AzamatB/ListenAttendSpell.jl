@@ -1,0 +1,11 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+CuArrays = "3a865a2d-5b23-5a0f-bc46-62713ec82fae"
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+IterTools = "c8e1da08-722c-5040-9ed9-7db0dc04731e"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+MFCC = "ca7b5df7-6146-5dcc-89ec-36256279a339"
+OMEinsum = "ebe7aa44-baf0-506c-a96f-8464559b3922"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+WAV = "8149f6b0-98f6-5db9-b78f-408fbbb8ef88"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
