@@ -2,11 +2,11 @@
 
 module ListenAttendSpell
 
-# using CuArrays
-# CuArrays.allowscalar(false)
+using CuArrays
+CuArrays.allowscalar(false)
 
 using Flux
-using Flux: reset!, onecold, @functor
+using Flux: reset!, onecold, @functor, Recur, LSTMCell
 using Zygote
 using Zygote: Buffer, @adjoint
 using LinearAlgebra
@@ -21,8 +21,8 @@ using OMEinsum
 Constructs a bidirectional LSTM layer.
 """
 struct BLSTM{M <: DenseMatrix, V <: DenseVector}
-   forward  :: Flux.Recur{Flux.LSTMCell{M,V}}
-   backward :: Flux.Recur{Flux.LSTMCell{M,V}}
+   forward  :: Recur{LSTMCell{M,V}}
+   backward :: Recur{LSTMCell{M,V}}
    dim_out  :: Int
 end
 
@@ -32,6 +32,14 @@ function BLSTM(in::Integer, out::Integer)
    forward  = LSTM(in, out)
    backward = LSTM(in, out)
    return BLSTM(forward, backward, out)
+end
+
+function BLSTM(forward::Recur{LSTMCell{M,V}}, backward::Recur{LSTMCell{M,V}}) where {M <: DenseMatrix, V <: DenseVector}
+    size(forward.cell.Wi, 2) == size(backward.cell.Wi, 2) || throw(DimensionMismatch("input dimension, $(size(forward.cell.Wi, 2)), of the forward-time LSTM layer does not match the input dimension, $(size(backward.cell.Wi, 2)), of the backward-time LSTM layer"))
+
+    out_dim = length(forward.cell.h)
+    out_dim == length(backward.cell.h) || throw(DimensionMismatch("output dimension, $out_dim, of the forward-time LSTM layer does not match the output dimension, $(length(backward.cell.h)), of the backward-time LSTM layer"))
+    return BLSTM(forward, backward, out_dim)
 end
 
 Base.show(io::IO, l::BLSTM)  = print(io,  "BLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
@@ -95,8 +103,8 @@ end
 Constructs pyramid BLSTM layer, which is the same as the BLSTM layer, with the addition that the input is first concatenated at every two consecutive time steps before feeding it to the usual BLSTM layer.
 """
 struct PBLSTM{M <: DenseMatrix, V <: DenseVector}
-   forward  :: Flux.Recur{Flux.LSTMCell{M,V}}
-   backward :: Flux.Recur{Flux.LSTMCell{M,V}}
+   forward  :: Recur{LSTMCell{M,V}}
+   backward :: Recur{LSTMCell{M,V}}
    dim_out  :: Int
 end
 
@@ -106,6 +114,14 @@ function PBLSTM(in::Integer, out::Integer)
    forward  = LSTM(2in, out)
    backward = LSTM(2in, out)
    return PBLSTM(forward, backward, out)
+end
+
+function PBLSTM(forward::Recur{LSTMCell{M,V}}, backward::Recur{LSTMCell{M,V}}) where {M <: DenseMatrix, V <: DenseVector}
+   size(forward.cell.Wi, 2) == size(backward.cell.Wi, 2) || throw(DimensionMismatch("input dimension, $(size(forward.cell.Wi, 2)), of the forward-time LSTM layer does not match the input dimension, $(size(backward.cell.Wi, 2)), of the backward-time LSTM layer"))
+
+   out_dim = length(forward.cell.h)
+   out_dim == length(backward.cell.h) || throw(DimensionMismatch("output dimension, $out_dim, of the forward-time LSTM layer does not match the output dimension, $(length(backward.cell.h)), of the backward-time LSTM layer"))
+   return PBLSTM(forward, backward, out_dim)
 end
 
 Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2)÷2, ", ", l.dim_out, ")")
@@ -233,9 +249,9 @@ end
 @functor State (context₀, decoding₀, prediction₀)
 
 function State(dim_c::Integer, dim_d::Integer, dim_p::Integer)
-   context₀    = zeros(Float32, dim_c, 1)
-   decoding₀   = zeros(Float32, dim_d, 1)
-   prediction₀ = zeros(Float32, dim_p, 1)
+   context₀    = zeros(Float32, dim_c, 1) |> gpu
+   decoding₀   = zeros(Float32, dim_d, 1) |> gpu
+   prediction₀ = zeros(Float32, dim_p, 1) |> gpu
    dim = dim_c + dim_d + dim_p
    return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀, dim)
 end
@@ -269,13 +285,13 @@ function LAS(encoder_dims::NamedTuple,
    dim_decoding =  last(decoder_out_dims)
 
    state       = State(dim_encoding, dim_decoding, out_dim)
-   listen      = Encoder(encoder_dims)
-   attention_ψ = MLP(dim_encoding, attention_dim)
-   attention_ϕ = MLP(dim_decoding, attention_dim)
-   spell       = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
-   infer       = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
+   listen      = Encoder(encoder_dims) |> gpu
+   attention_ψ = MLP(dim_encoding, attention_dim) |> gpu
+   attention_ϕ = MLP(dim_decoding, attention_dim) |> gpu
+   spell       = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims) |> gpu
+   infer       = CharacterDistribution(dim_encoding + dim_decoding, out_dim) |> gpu
 
-   las = LAS(state, listen, attention_ψ, attention_ϕ, spell, infer) |> gpu
+   las = LAS(state, listen, attention_ψ, attention_ϕ, spell, infer)
    return las
 end
 
