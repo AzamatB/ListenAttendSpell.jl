@@ -1,18 +1,21 @@
 @adjoint function reduce(::typeof(hcat), As::AbstractVector{<:AbstractVecOrMat})
-    cumsizes = cumsum(size.(As, 2))
-    return reduce(hcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_horz(sz, Δ, A), cumsizes, As))
+   cumsizes = cumsum(size.(As, 2))
+   return reduce(hcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_horz(sz, Δ, A), cumsizes, As))
 end
 
 @adjoint function reduce(::typeof(vcat), As::AbstractVector{<:AbstractVecOrMat})
-    cumsizes = cumsum(size.(As, 1))
-    return reduce(vcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_vert(sz, Δ, A), cumsizes, As))
+   cumsizes = cumsum(size.(As, 1))
+   return reduce(vcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_vert(sz, Δ, A), cumsizes, As))
 end
 
+@adjoint repeat(x::AbstractVector, m::Integer) =
+   repeat(x, m), ȳ -> (dropdims(sum(reshape(ȳ, length(x), :); dims=2); dims=2), nothing)
+
 @adjoint function repeat(x::AbstractVecOrMat, m::Integer, n::Integer=1)
-   size₁, size₂ = size(x, 1), size(x, 2)
-   begin₁, begin₂ = firstindex(x, 1), firstindex(x, 2)
-   end₁,   end₂   =  lastindex(x, 1),  lastindex(x, 2)
-   return repeat(x, m, n), ȳ -> (sum(@view ȳ[(begin₁ + i*size₁):(end₁ + i*size₁), (begin₂ + j*size₂):(end₂ + j*size₂)] for i ∈ 0:(m-1), j ∈ 0:(n-1)), nothing, nothing)
+   return repeat(x, m, n), function (ȳ)
+      ȳ′ = reshape(ȳ, size(x,1), m, size(x,2), n)
+      return reshape(sum(ȳ′; dims=(2,4)), size(x)), nothing, nothing
+   end
 end
 
 """
