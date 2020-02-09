@@ -13,25 +13,16 @@ using LinearAlgebra
 using JLD2
 using IterTools
 using Base.Iterators: reverse
-using OMEinsum#master
-
-@adjoint function reduce(::typeof(hcat), As::AbstractVector{<:AbstractVecOrMat})
-    cumsizes = cumsum(size.(As, 2))
-    return reduce(hcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_horz(sz, Δ, A), cumsizes, As))
-end
-@adjoint function reduce(::typeof(vcat), As::AbstractVector{<:AbstractVecOrMat})
-    cumsizes = cumsum(size.(As, 1))
-    return reduce(vcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_vert(sz, Δ, A), cumsizes, As))
-end
+using OMEinsum
 
 """
     BLSTM(in::Integer, out::Integer)
 
 Constructs a bidirectional LSTM layer.
 """
-struct BLSTM{L}
-   forward  :: L
-   backward :: L
+struct BLSTM{M <: DenseMatrix, V <: DenseVector}
+   forward  :: Flux.Recur{Flux.LSTMCell{M,V}}
+   backward :: Flux.Recur{Flux.LSTMCell{M,V}}
    dim_out  :: Int
 end
 
@@ -103,9 +94,9 @@ end
 
 Constructs pyramid BLSTM layer, which is the same as the BLSTM layer, with the addition that the input is first concatenated at every two consecutive time steps before feeding it to the usual BLSTM layer.
 """
-struct PBLSTM{L}
-   forward  :: L
-   backward :: L
+struct PBLSTM{M <: DenseMatrix, V <: DenseVector}
+   forward  :: Flux.Recur{Flux.LSTMCell{M,V}}
+   backward :: Flux.Recur{Flux.LSTMCell{M,V}}
    dim_out  :: Int
 end
 
@@ -127,14 +118,14 @@ Input must be a vector of length T (time duration), whose each element is a matr
 """
 function (m::PBLSTM)(xs::VM)::VM where VM <: DenseVector
    # reduce time duration by half by restacking consecutive pairs of input along the time dimension
-   xxs = [@inbounds [xs[i-1]; xs[i]] for i ∈ 2:2:lastindex(xs)]
+   x̄s = [@inbounds [xs[i-1]; xs[i]] for i ∈ 2:2:lastindex(xs)]
    # counterintuitively the gradient of the following version is not much faster (on par in fact),
    # even though it is implemented via broadcasting
-   # xxs = vcat.(getindex.(Ref(xs), 1:2:lastindex(xs)), getindex.(Ref(xs), 2:2:lastindex(xs)))
-   # xxs = @views @inbounds(vcat.(xs[1:2:end], xs[2:2:end]))
-   # xxs = vcat.(xs[1:2:end], xs[2:2:end])
+   # x̄s = vcat.(getindex.(Ref(xs), 1:2:lastindex(xs)), getindex.(Ref(xs), 2:2:lastindex(xs)))
+   # x̄s = @views @inbounds(vcat.(xs[1:2:end], xs[2:2:end]))
+   # x̄s = vcat.(xs[1:2:end], xs[2:2:end])
    # bidirectional run step
-   return vcat.(m.forward.(xxs), flip(m.backward, xxs))
+   return vcat.(m.forward.(x̄s), flip(m.backward, x̄s))
 end
 
 """
@@ -147,7 +138,7 @@ function (m::PBLSTM)(Xs::T₃)::T₃ where T₃ <: DenseArray{<:Real,3}
    D, T, B = size(Xs)
    T½ = T÷2
    # reduce time duration by half by restacking consecutive pairs of input along the time dimension
-   XXs = reshape(Xs, 2D, T½, B)
+   X̄s = reshape(Xs, 2D, T½, B)
    # preallocate output buffer
    Ys = Buffer(Xs, 2m.dim_out, T½, B)
    axisYs₁ = axes(Ys, 1)
@@ -157,17 +148,16 @@ function (m::PBLSTM)(Xs::T₃)::T₃ where T₃ <: DenseArray{<:Real,3}
    slice_f = axisYs₁[1:m.dim_out]
    slice_b = axisYs₁[(m.dim_out+1):end]
    # bidirectional run step
-   setindex!.(Ref(Ys),  m.forward.(view.(Ref(XXs), :, time, :)), Ref(slice_f), time, :)
-   setindex!.(Ref(Ys), m.backward.(view.(Ref(XXs), :, rev_time, :)), Ref(slice_b), rev_time, :)
+   setindex!.(Ref(Ys),  m.forward.(view.(Ref(X̄s), :, time, :)), Ref(slice_f), time, :)
+   setindex!.(Ref(Ys), m.backward.(view.(Ref(X̄s), :, rev_time, :)), Ref(slice_b), rev_time, :)
    # the same as
    # @views for (t_f, t_b) ∈ zip(time, reverse(time))
-   #    Ys[slice_f, t_f, :] =  m.forward(XXs[:, t_f, :])
-   #    Ys[slice_b, t_b, :] = m.backward(XXs[:, t_b, :])
+   #    Ys[slice_f, t_f, :] =  m.forward(X̄s[:, t_f, :])
+   #    Ys[slice_b, t_b, :] = m.backward(X̄s[:, t_b, :])
    # end
    # but implemented via broadcasting as Zygote differentiates loops much slower than broadcasting
    return copy(Ys)
 end
-
 
 # Flux.reset!(m::PBLSTM) = reset!((m.forward, m.backward)) # not needed as taken care of by @functor
 
@@ -200,7 +190,6 @@ function Encoder(dims::NamedTuple{(:blstm, :pblstms_out),Tuple{NamedTuple{(:in, 
    return model
 end
 
-
 function MLP(in::Integer, out::NTuple{N,Integer}, σs::NTuple{N,Function}) where N
    model = Dense(in, first(out), first(σs))
    if N > 1
@@ -219,7 +208,6 @@ function MLP(in::Integer, out::Union{Integer, NTuple{N,Integer} where N}, σ::Fu
    return model
 end
 
-
 function Decoder(in::Integer, out::Union{Integer, NTuple{N,Integer} where N})
    model = LSTM(in, first(out))
    if length(out) > 1
@@ -231,7 +219,7 @@ end
 
 CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoftmax)
 
-mutable struct State{M <: DenseMatrix{<:Real}}
+mutable struct State{M <: DenseMatrix}
    context     :: M   # last attention context
    decoding    :: M   # last decoder state
    prediction  :: M   # last prediction
@@ -317,7 +305,7 @@ end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-@inline function decode(m::LAS, Hs::DenseArray{R,3}, maxT::Integer) where {R <: Real}
+@inline function decode(m::LAS{M}, Hs::DenseArray{R,3}, maxT::Integer)::Vector{M} where {M <: DenseMatrix, R <: Real}
    batch_size = size(Hs, 3)
    # precompute keys ψ(H) by gluing the slices of Hs along the batch dimension into a single D×TB matrix, then
    # passing it through the ψ dense layer in a single pass and then reshaping the result back into D′×T×B tensor
@@ -325,9 +313,9 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    # ψhs = m.attention_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
    # batchify state, i.e. initialize a state for each sequence in the batch
-   m.state.decoding   = m.state.decoding   .+ gpu(zeros(R, size(m.state.decoding, 1),   batch_size))
-   m.state.prediction = m.state.prediction .+ gpu(zeros(R, size(m.state.prediction, 1), batch_size))
-   m.state.context    = m.state.context    .+ gpu(zeros(R, size(m.state.context, 1),    batch_size))
+   m.state.decoding   = m.state.decoding   .+ gpu(zeros(R, size(m.state.decoding, 1),   batch_size))::M
+   m.state.prediction = m.state.prediction .+ gpu(zeros(R, size(m.state.prediction, 1), batch_size))::M
+   m.state.context    = m.state.context    .+ gpu(zeros(R, size(m.state.context, 1),    batch_size))::M
    ŷs = map(1:maxT) do _
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
@@ -347,7 +335,7 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    return ŷs
 end
 
-function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))
+function (m::LAS{M})(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::Vector{M} where {M <: DenseMatrix}
    # compute input encoding, which are also values for the attention layer
    hs = m.listen(xs)
    dim_out, batch_size = size(first(hs))
@@ -360,7 +348,7 @@ function (m::LAS)(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))
    return ŷs
 end
 
-function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))
+function (m::LAS{M})(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))::Vector{M} where {M <: DenseMatrix}
    # compute input encoding, which are also values for the attention layer
    Hs = m.listen(Xs)
    # perform attend and spell steps
@@ -369,43 +357,18 @@ function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))
    return ŷs
 end
 
-function (m::LAS)(xs::DenseVector{<:DenseVector{<:Real}})::DenseVector{<:DenseVector{<:Real}}
+function (m::LAS)(xs::VV)::VV where VV <: DenseVector{<:DenseVector}
    T = length(xs)
-   xs = gpu.(reshape.(pad(xs, time_squashing_factor(m)), Val(2)))
-   ŷs = dropdims.(m(xs, T); dims=2)
+   Xs = reshape(reduce(hcat, pad(xs, time_squashing_factor(m))), Val(3)) |> gpu
+   ŷs = dropdims.(m(Xs, T); dims=2)
    return ŷs
 end
 
-function pad(xs::VV, multiplicity)::VV where VV <: DenseVector{<:DenseVector}
+function pad(xs::DenseVector{<:DenseVector}, multiplicity::Integer)
    T = length(xs)
    newT = ceil(Int, T / multiplicity)multiplicity
-   z = similar(first(xs))
-   fill!(z, zero(eltype(z)))
-   xs = resize!(copy(xs), newT)
-   xs[(T+1):end] .= Ref(z)
-   return xs
-end
-
-"""
-    tensor2vecofmats(Xs::DenseArray{<:Real,3}) -> Vector{<:DenseVecOrMat}
-
-Given a 3D tensor `Xs` of dimensions D×T×B, constructs a vector of length T of D×B slices of `Xs` along the second dimension.
-"""
-tensor2vecofmats(Xs::DenseArray{<:Real,3}) = [Xs[:,t,:] for t ∈ axes(Xs, 2)]
-
-"""
-    vecofmats2tensor(xs::DenseVector{<:DenseVecOrMat}) -> DenseArray{<:Real,3}
-
-Constructs a 3D tensor of dimensions D×T×B by concatenating along the second dimension the elements of the input vector `xs` of length T, whose each element is a D×B matrix.
-"""
-function vecofmats2tensor(xs::DenseVector{<:DenseVecOrMat})
-   x₁ = first(xs)
-   D, B = size(x₁)
-   Xs = similar(x₁, D, length(xs), B)
-   @inbounds for t ∈ eachindex(xs)
-      Xs[:,t,:] = xs[t]
-   end
-   return Xs
+   z = zero(first(xs))
+   return [xs; (_ -> z).(1:(newT - T))]
 end
 
 """
