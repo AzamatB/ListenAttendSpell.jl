@@ -2,8 +2,8 @@
 
 module ListenAttendSpell
 
-using CuArrays
-CuArrays.allowscalar(false)
+# using CuArrays
+# CuArrays.allowscalar(false)
 
 using Flux
 using Flux: reset!, onecold, @functor, Recur, LSTMCell
@@ -14,6 +14,8 @@ using JLD2
 using IterTools
 using Base.Iterators: reverse
 using OMEinsum
+
+include("utils.jl")
 
 """
     BLSTM(in::Integer, out::Integer)
@@ -44,9 +46,11 @@ end
 
 Base.show(io::IO, l::BLSTM)  = print(io,  "BLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
 
-function flip(f, xs)
+function flip(f, xs::T) where T <: AbstractVector
    rev_time = reverse(eachindex(xs))
-   return getindex.(Ref(f.(getindex.(Ref(xs), rev_time))), rev_time)
+   return getindex.(Ref(
+      f.(getindex.(Ref(xs), rev_time))::T
+   ), rev_time)
    # the same as
    # flipped_xs = Buffer(xs)
    # @inbounds for t ∈ rev_time
@@ -62,8 +66,8 @@ end
 Forward pass of the bidirectional LSTM layer for a vector of matrices input.
 Input must be a vector of length T (time duration), whose each element is a matrix of size D×B (input dimension × # of batches).
 """
-function (m::BLSTM)(xs::VM)::VM where VM <: DenseVector
-   vcat.(m.forward.(xs), flip(m.backward, xs))
+function (m::BLSTM)(xs::VM) where VM <: AbstractVector{<:DenseVecOrMat}
+   vcat.(m.forward.(xs), flip(m.backward, xs))::VM
 end
 
 """
@@ -72,7 +76,7 @@ end
 Forward pass of the bidirectional LSTM layer for a 3D tensor input.
 Input tensor must be arranged in D×T×B (input dimension × time duration × # batches) order.
 """
-function (m::BLSTM)(Xs::T₃)::T₃ where T₃ <: DenseArray{<:Real,3}
+function (m::BLSTM)(Xs::DenseArray{<:Real,3})
    # preallocate output buffer
    Ys = Buffer(Xs, 2m.dim_out, size(Xs,2), size(Xs,3))
    axisYs₁ = axes(Ys, 1)
@@ -132,16 +136,17 @@ Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2)÷
 Forward pass of the pyramid BLSTM layer for a vector of matrices input.
 Input must be a vector of length T (time duration), whose each element is a matrix of size D×B (input dimension × # of batches).
 """
-function (m::PBLSTM)(xs::VM)::VM where VM <: DenseVector
+function (m::PBLSTM)(xs::VM) where VM <: AbstractVector{<:DenseVecOrMat}
    # reduce time duration by half by restacking consecutive pairs of input along the time dimension
-   x̄s = [@inbounds [xs[i-1]; xs[i]] for i ∈ 2:2:lastindex(xs)]
+   evenidxs = (firstindex(xs)+1):2:lastindex(xs)
+   x̄s = (i -> [xs[i-1]; xs[i]]).(evenidxs)
    # counterintuitively the gradient of the following version is not much faster (on par in fact),
    # even though it is implemented via broadcasting
    # x̄s = vcat.(getindex.(Ref(xs), 1:2:lastindex(xs)), getindex.(Ref(xs), 2:2:lastindex(xs)))
    # x̄s = @views @inbounds(vcat.(xs[1:2:end], xs[2:2:end]))
    # x̄s = vcat.(xs[1:2:end], xs[2:2:end])
    # bidirectional run step
-   return vcat.(m.forward.(x̄s), flip(m.backward, x̄s))
+   return vcat.(m.forward.(x̄s), flip(m.backward, x̄s))::VM
 end
 
 """
@@ -150,7 +155,7 @@ end
 Forward pass of the pyramid BLSTM layer for a 3D tensor input.
 Input tensor must be arranged in D×T×B (input dimension × time duration × # batches) order.
 """
-function (m::PBLSTM)(Xs::T₃)::T₃ where T₃ <: DenseArray{<:Real,3}
+function (m::PBLSTM)(Xs::DenseArray{<:Real,3})
    D, T, B = size(Xs)
    T½ = T÷2
    # reduce time duration by half by restacking consecutive pairs of input along the time dimension
@@ -265,6 +270,14 @@ function Flux.reset!(s::State)
    return nothing
 end
 
+function Flux.reset!(s::State, batch_size::Integer)
+   # reset & batchify state, i.e. initialize a state for each sequence in the batch
+   s.context    = repeat(s.context₀,    1, batch_size)
+   s.decoding   = repeat(s.decoding₀,   1, batch_size)
+   s.prediction = repeat(s.prediction₀, 1, batch_size)
+   return nothing
+end
+
 struct LAS{V, E, Aϕ, Aψ, D, C}
    state       :: State{V} # current state of the model
    listen      :: E        # encoder function
@@ -318,6 +331,11 @@ function Base.show(io::IO, m::LAS)
 end
 
 # Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
+function Flux.reset!(m::LAS, batch_size::Integer)
+   reset!(m.state, batch_size)
+   reset!((m.listen, m.spell))
+   return nothing
+end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
@@ -328,10 +346,6 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    ψHs = reshape(m.attention_ψ(reshape(Hs, size(Hs,1), :)), size(m.attention_ψ.W, 1), :, batch_size)
    # ψhs = m.attention_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
-   # batchify state, i.e. initialize a state for each sequence in the batch
-   m.state.decoding   = m.state.decoding   .+ gpu(zeros(R, size(m.state.decoding, 1),   batch_size))::M
-   m.state.prediction = m.state.prediction .+ gpu(zeros(R, size(m.state.prediction, 1), batch_size))::M
-   m.state.context    = m.state.context    .+ gpu(zeros(R, size(m.state.context, 1),    batch_size))::M
    ŷs = map(1:maxT) do _
       # compute decoder state
       m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
@@ -352,121 +366,33 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 end
 
 function (m::LAS{M})(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::Vector{M} where {M <: DenseMatrix}
+   batch_size = size(first(xs), 2)
+   reset!(m, batch_size)
    # compute input encoding, which are also values for the attention layer
    hs = m.listen(xs)
-   dim_out, batch_size = size(first(hs))
    # transform T-length sequence of D×B matrices into the D×T×B tensor by first conconcatenating matrices
    # along the 1st dimension and to get singe DT×B matrix and then reshaping it into D×T×B tensor
-   Hs = reshape(reduce(vcat, hs), dim_out, :, batch_size)
+   Hs = reshape(reduce(vcat, hs), size(first(hs), 1), :, batch_size)
    # perform attend and spell steps
    ŷs = decode(m, Hs, maxT)
-   reset!(m)
    return ŷs
 end
 
 function (m::LAS{M})(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))::Vector{M} where {M <: DenseMatrix}
+   reset!(m, size(Xs,3))
    # compute input encoding, which are also values for the attention layer
    Hs = m.listen(Xs)
    # perform attend and spell steps
    ŷs = decode(m, Hs, maxT)
-   reset!(m)
    return ŷs
 end
 
 function (m::LAS)(xs::VV)::VV where VV <: DenseVector{<:DenseVector}
+   reset!(m)
    T = length(xs)
-   Xs = reshape(reduce(hcat, pad(xs, time_squashing_factor(m))), Val(3)) |> gpu
+   Xs = reshape(reduce(hcat, pad(xs, time_squashing_factor(m))), Val(3))
    ŷs = dropdims.(m(Xs, T); dims=2)
    return ŷs
-end
-
-function pad(xs::DenseVector{<:DenseVector}, multiplicity::Integer)
-   T = length(xs)
-   newT = ceil(Int, T / multiplicity)multiplicity
-   z = zero(first(xs))
-   return [xs; (_ -> z).(1:(newT - T))]
-end
-
-"""
-    batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
-
-Given a collection `Xs` of input sequences, returns a vector of length T whose tᵗʰ element is a D×B matrix of inputs at time t across all sequences in a given batch.
-Here T is the maximum time length in the batch, D is the dimensionality of the input elements of sequences and B is the batch size.
-"""
-function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
-   # find the smallest multiple of `multiplicity` that is no less than `maxT`
-   newT = ceil(Int, maxT / multiplicity)multiplicity
-   # initialize & populate padding vector
-   z = (similar ∘ first ∘ first)(Xs)
-   fill!(z, zero(eltype(z)))
-   # resize each sequence `xs` to the size `newT` by paddding it with vector z of zeros
-   for xs ∈ Xs
-      T = length(xs)
-      resize!(xs, newT)
-      xs[(T+1):end] .= Ref(z)
-   end
-   # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
-   return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
-end
-
-"""
-    batch_targets(ys::VV, output_dim::Integer, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
-
-Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction Ŷs, which is assumed to be a vector of length T whose tᵗʰ element is a D×B matrix of predictions at time t across all sequences in a given batch.
-Here T is the maximum time length in the batch, D is the dimensionality of the output and B is the batch size.
-"""
-function batch_targets(ys::VV, output_dim::Integer, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
-   batch_size = length(ys)
-   linidxs = similar(ys, maxT)
-   idxs = similar(first(ys), batch_size)
-   offsets = range(0; step=output_dim, length=batch_size)
-   @views for t ∈ 1:maxT
-      n = 0
-      for (y, offset) ∈ zip(ys, offsets)
-         if t <= length(y)
-            n += 1
-            idxs[n] = offset + y[t]
-         end
-      end
-      linidxs[t] = idxs[1:n]
-   end
-   return linidxs
-end
-
-"""
-    batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
-
-Arranges dataset into batches such that the number of batches approximately equals the ratio of dataset size to `batch_size`.
-Batches are formed by first sorting sequences in the dataset according to their length (which minimizes the total number of elements to pad in inputs) and then partitioning the result into batches such that each batch approximately the same total number of sequence elements (this ensures that each batch takes up the same amount of memory, so as to avoid memory overflow).
-"""
-function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}},
-               ys::DenseVector{<:DenseVector},
-               output_dim::Integer,
-               batch_size::Integer,
-               multiplicity::Integer)
-
-   sortidxs = sortperm(Xs; by=length)
-   Xs, ys = Xs[sortidxs], ys[sortidxs]
-
-   cumseqlengths = cumsum(length.(ys))
-   nbatches = ceil(Int, length(Xs) / batch_size)
-   # subtract 0.5 from the last element of the range
-   # to ensure that i index inside the loop won't go out of bounds due to floating point rounding errors
-   cum_n_elts_rng = range(0, last(cumseqlengths)-0.5; length = nbatches+1)[2:end]
-   lastidxs = similar(sortidxs, nbatches)
-   i = 1
-   for (n, cum_n_elts_for_batch) ∈ enumerate(cum_n_elts_rng)
-      while cumseqlengths[i] < cum_n_elts_for_batch
-         i += 1
-      end
-      lastidxs[n] = i
-   end
-   firstidxs = [1; @view(lastidxs[1:(end-1)]) .+ 1]
-
-   maxTs = length.(@view Xs[lastidxs])
-   xs_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   linidxs_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   return xs_batches, linidxs_batches, maxTs
 end
 
 # dim_encoding  = (512, 512, 512, 512)
@@ -490,7 +416,7 @@ end
 # best path decoding
 function predict(m::LAS, xs::DenseVector{<:DenseMatrix{<:Real}}, lengths::DenseVector{<:Integer}, labels)::DenseVector{<:DenseVector}
    maxT = maximum(lengths)
-   Ŷs = m(gpu.(xs), maxT) |> cpu
+   Ŷs = m(xs, maxT) |> cpu
    predictions = [onecold(@view(Ŷs[:, 1:len, n]), labels) for (n, len) ∈ enumerate(lengths)]
    return predictions
 end
