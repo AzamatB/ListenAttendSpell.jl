@@ -46,10 +46,10 @@ end
 
 Base.show(io::IO, l::BLSTM)  = print(io,  "BLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
 
-function flip(f, xs::T) where T <: AbstractVector
+function flip(f, xs::V) where V <: AbstractVector
    rev_time = reverse(eachindex(xs))
    return getindex.(Ref(
-      f.(getindex.(Ref(xs), rev_time))::T
+      f.(getindex.(Ref(xs), rev_time))::V
    ), rev_time)
    # the same as
    # flipped_xs = Buffer(xs)
@@ -239,52 +239,31 @@ function Decoder(in::Integer, out::Union{Integer, NTuple{N,Integer} where N})
 end
 
 CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoftmax)
+"""
+    State₀{V <: DenseVector}
 
-mutable struct State{M <: DenseMatrix}
-   context     :: M   # last attention context
-   decoding    :: M   # last decoder state
-   prediction  :: M   # last prediction
-   # reset values
-   context₀    :: M
-   decoding₀   :: M
-   prediction₀ :: M
-   dim         :: Int
+Initial state variables
+"""
+mutable struct State₀{V <: DenseVector}
+   context    :: V
+   decoding   :: V
+   prediction :: V
 end
 
-@functor State (context₀, decoding₀, prediction₀)
+@functor State₀
 
-function State(dim_c::Integer, dim_d::Integer, dim_p::Integer)
-   context₀    = zeros(Float32, dim_c, 1) |> gpu
-   decoding₀   = zeros(Float32, dim_d, 1) |> gpu
-   prediction₀ = zeros(Float32, dim_p, 1) |> gpu
-   dim = dim_c + dim_d + dim_p
-   return State(context₀, decoding₀, prediction₀, context₀, decoding₀, prediction₀, dim)
-end
+State₀(dim_c::Integer, dim_d::Integer, dim_p::Integer) =
+   State₀(zeros(Float32, dim_c), zeros(Float32, dim_d), zeros(Float32, dim_p))
 
-Base.show(io::IO, s::State) = print(io, "State(", size(s.context, 1), ", ", size(s.decoding, 1), ", ", size(s.prediction, 1), ")")
-
-function Flux.reset!(s::State)
-   s.context    = s.context₀
-   s.decoding   = s.decoding₀
-   s.prediction = s.prediction₀
-   return nothing
-end
-
-function Flux.reset!(s::State, batch_size::Integer)
-   # reset & batchify state, i.e. initialize a state for each sequence in the batch
-   s.context    = repeat(s.context₀,    1, batch_size)
-   s.decoding   = repeat(s.decoding₀,   1, batch_size)
-   s.prediction = repeat(s.prediction₀, 1, batch_size)
-   return nothing
-end
+Base.show(io::IO, s₀::State₀) = print(io, "State₀(", length(s₀.context), ", ", length(s₀.decoding), ", ", length(s₀.prediction), ")")
 
 struct LAS{V, E, Aϕ, Aψ, D, C}
-   state       :: State{V} # current state of the model
-   listen      :: E        # encoder function
-   attention_ψ :: Aψ       # keys attention context function
-   attention_ϕ :: Aϕ       # query attention context function
-   spell       :: D        # LSTM decoder
-   infer       :: C        # character distribution inference function
+   state₀      :: State₀{V} # trainable initial state of the model
+   listen      :: E         # encoder function
+   attention_ψ :: Aψ        # keys attention context function
+   attention_ϕ :: Aϕ        # query attention context function
+   spell       :: D         # LSTM decoder
+   infer       :: C         # character distribution inference function
 end
 
 @functor LAS
@@ -297,14 +276,14 @@ function LAS(encoder_dims::NamedTuple,
    dim_encoding = 2last(encoder_dims.pblstms_out)
    dim_decoding =  last(decoder_out_dims)
 
-   state       = State(dim_encoding, dim_decoding, out_dim)
-   listen      = Encoder(encoder_dims) |> gpu
-   attention_ψ = MLP(dim_encoding, attention_dim) |> gpu
-   attention_ϕ = MLP(dim_decoding, attention_dim) |> gpu
-   spell       = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims) |> gpu
-   infer       = CharacterDistribution(dim_encoding + dim_decoding, out_dim) |> gpu
+   state₀       = State₀(dim_encoding, dim_decoding, out_dim)
+   listen      = Encoder(encoder_dims)
+   attention_ψ = MLP(dim_encoding, attention_dim)
+   attention_ϕ = MLP(dim_decoding, attention_dim)
+   spell       = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
+   infer       = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
 
-   las = LAS(state, listen, attention_ψ, attention_ϕ, spell, infer)
+   las = LAS(state₀, listen, attention_ψ, attention_ϕ, spell, infer) |> gpu
    return las
 end
 
@@ -320,7 +299,7 @@ end
 function Base.show(io::IO, m::LAS)
    print(io,
       "LAS(\n    ",
-           m.state, ",\n    ",
+           m.state₀, ",\n    ",
            m.listen, ",\n    ",
            m.attention_ψ, ",\n    ",
            m.attention_ϕ, ",\n    ",
@@ -330,17 +309,16 @@ function Base.show(io::IO, m::LAS)
    )
 end
 
-# Flux.reset!(m::LAS) = reset!((m.state, m.listen, m.spell)) # not needed as taken care of by @functor
-function Flux.reset!(m::LAS, batch_size::Integer)
-   reset!(m.state, batch_size)
-   reset!((m.listen, m.spell))
-   return nothing
-end
+# Flux.reset!(m::LAS) = reset!((m.listen, m.spell)) # not needed as taken care of by @functor
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-@inline function decode(m::LAS{M}, Hs::DenseArray{R,3}, maxT::Integer)::Vector{M} where {M <: DenseMatrix, R <: Real}
+@inline function decode(m::LAS, Hs::DenseArray{<:Real,3}, maxT::Integer)
    batch_size = size(Hs, 3)
+   # initialize state for every sequence in a batch
+   context    = repeat(m.state₀.context,    1, batch_size)
+   decoding   = repeat(m.state₀.decoding,   1, batch_size)
+   prediction = repeat(m.state₀.prediction, 1, batch_size)
    # precompute keys ψ(H) by gluing the slices of Hs along the batch dimension into a single D×TB matrix, then
    # passing it through the ψ dense layer in a single pass and then reshaping the result back into D′×T×B tensor
    ψHs = reshape(m.attention_ψ(reshape(Hs, size(Hs,1), :)), size(m.attention_ψ.W, 1), :, batch_size)
@@ -348,38 +326,36 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
    ŷs = map(1:maxT) do _
       # compute decoder state
-      m.state.decoding = m.spell([m.state.decoding; m.state.prediction; m.state.context])
+      decoding = m.spell([decoding; prediction; context])
       # compute query ϕ(sᵢ)
-      ϕsᵢ = m.attention_ϕ(m.state.decoding)
+      ϕsᵢ = m.attention_ϕ(decoding)
       # compute energies via batch matrix multiplication
       @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
       # check: Eᵢs ≈ reduce(hcat, diag.((ϕsᵢ',) .* ψhs))'
       # compute attentions weights
       αᵢs = softmax(Eᵢs)
       # compute attended context using Einstein summation convention, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
-      @ein m.state.context[d,b] := αᵢs[t,b] * Hs[d,t,b]
-      # check: m.state.context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
+      @ein context[d,b] := αᵢs[t,b] * Hs[d,t,b]
+      # check: context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
       # predict probability distribution over character alphabet
-      m.state.prediction = m.infer([m.state.decoding; m.state.context])
+      prediction = m.infer([decoding; context])
    end
    return ŷs
 end
 
-function (m::LAS{M})(xs::DenseVector{<:DenseMatrix}, maxT::Integer = length(xs))::Vector{M} where {M <: DenseMatrix}
-   batch_size = size(first(xs), 2)
-   reset!(m, batch_size)
+function (m::LAS)(xs::AbstractVector{<:DenseMatrix}, maxT::Integer = length(xs))
    # compute input encoding, which are also values for the attention layer
    hs = m.listen(xs)
+   dim_out, batch_size = size(first(hs))
    # transform T-length sequence of D×B matrices into the D×T×B tensor by first conconcatenating matrices
    # along the 1st dimension and to get singe DT×B matrix and then reshaping it into D×T×B tensor
-   Hs = reshape(reduce(vcat, hs), size(first(hs), 1), :, batch_size)
+   Hs = reshape(reduce(vcat, hs), dim_out, :, batch_size)
    # perform attend and spell steps
    ŷs = decode(m, Hs, maxT)
    return ŷs
 end
 
-function (m::LAS{M})(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))::Vector{M} where {M <: DenseMatrix}
-   reset!(m, size(Xs,3))
+function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))
    # compute input encoding, which are also values for the attention layer
    Hs = m.listen(Xs)
    # perform attend and spell steps
@@ -387,8 +363,7 @@ function (m::LAS{M})(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))::Vect
    return ŷs
 end
 
-function (m::LAS)(xs::VV)::VV where VV <: DenseVector{<:DenseVector}
-   reset!(m)
+function (m::LAS)(xs::AbstractVector{<:DenseVector})
    T = length(xs)
    Xs = reshape(reduce(hcat, pad(xs, time_squashing_factor(m))), Val(3))
    ŷs = dropdims.(m(Xs, T); dims=2)
@@ -485,6 +460,7 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
       duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
          # move current batch to GPU
          xs = gpu.(xs)
+         reset!(las)
          l, pb = Flux.pullback(θ) do
             loss(las, xs, linidxs)
          end
