@@ -244,21 +244,21 @@ CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoft
 
 Initial state variables
 """
-mutable struct State₀{V <: DenseVector}
-   context    :: V
-   decoding   :: V
-   prediction :: V
+mutable struct State₀{M <: DenseMatrix}
+   context    :: M
+   decoding   :: M
+   prediction :: M
 end
 
 @functor State₀
 
 State₀(dim_c::Integer, dim_d::Integer, dim_p::Integer) =
-   State₀(zeros(Float32, dim_c), zeros(Float32, dim_d), zeros(Float32, dim_p))
+   State₀(zeros(Float32, dim_c, 1), zeros(Float32, dim_d, 1), zeros(Float32, dim_p, 1))
 
-Base.show(io::IO, s₀::State₀) = print(io, "State₀(", length(s₀.context), ", ", length(s₀.decoding), ", ", length(s₀.prediction), ")")
+Base.show(io::IO, s₀::State₀) = print(io, "State₀(", size(s₀.context, 1), ", ", size(s₀.decoding, 1), ", ", size(s₀.prediction, 1), ")")
 
-struct LAS{V, E, Aϕ, Aψ, D, C}
-   state₀      :: State₀{V} # trainable initial state of the model
+struct LAS{M, E, Aϕ, Aψ, D, C}
+   state₀      :: State₀{M} # trainable initial state of the model
    listen      :: E         # encoder function
    attention_ψ :: Aψ        # keys attention context function
    attention_ϕ :: Aϕ        # query attention context function
@@ -313,7 +313,7 @@ end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-@inline function decode(m::LAS, Hs::DenseArray{<:Real,3}, maxT::Integer)
+@inline function decode(m::LAS{M}, Hs::DenseArray{<:Real,3}, maxT::Integer) where M <: DenseMatrix
    batch_size = size(Hs, 3)
    # initialize state for every sequence in a batch
    context    = repeat(m.state₀.context,    1, batch_size)
@@ -324,23 +324,26 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    ψHs = reshape(m.attention_ψ(reshape(Hs, size(Hs,1), :)), size(m.attention_ψ.W, 1), :, batch_size)
    # ψhs = m.attention_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
-   ŷs = map(1:maxT) do _
+   ŷs = Buffer(Vector{M}(undef, maxT), false)
+   @inbounds for t ∈ eachindex(ŷs)
       # compute decoder state
-      decoding = m.spell([decoding; prediction; context])
+      decoding = m.spell([decoding; prediction; context])::M
       # compute query ϕ(sᵢ)
       ϕsᵢ = m.attention_ϕ(decoding)
       # compute energies via batch matrix multiplication
-      @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
+      # @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
+      Eᵢs = einsum(EinCode{((1,2), (1,3,2)), (3,2)}(), (ϕsᵢ, ψHs))::M
       # check: Eᵢs ≈ reduce(hcat, diag.((ϕsᵢ',) .* ψhs))'
       # compute attentions weights
       αᵢs = softmax(Eᵢs)
       # compute attended context using Einstein summation convention, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
-      @ein context[d,b] := αᵢs[t,b] * Hs[d,t,b]
+      # @ein context[d,b] := αᵢs[t,b] * Hs[d,t,b]
+      context = einsum(EinCode{((1,2), (3,1,2)), (3,2)}(), (αᵢs, Hs))::M
       # check: context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
       # predict probability distribution over character alphabet
-      prediction = m.infer([decoding; context])
+      ŷs[t] = prediction = m.infer([decoding; context])
    end
-   return ŷs
+   return copy(ŷs)
 end
 
 function (m::LAS)(xs::AbstractVector{<:DenseMatrix}, maxT::Integer = length(xs))
@@ -363,10 +366,10 @@ function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))
    return ŷs
 end
 
-function (m::LAS)(xs::AbstractVector{<:DenseVector})
-   T = length(xs)
-   Xs = reshape(reduce(hcat, pad(xs, time_squashing_factor(m))), Val(3))
-   ŷs = dropdims.(m(Xs, T); dims=2)
+function (m::LAS)(x::AbstractVector{<:DenseVector})
+   T = length(x)
+   X = reshape(reduce(hcat, pad(x, time_squashing_factor(m))), Val(3))
+   ŷs = dropdims.(m(X, T); dims=2)
    return ŷs
 end
 
