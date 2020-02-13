@@ -48,58 +48,58 @@ function pad(xs::DenseVector{<:DenseVector}, multiplicity::Integer)
 end
 
 """
-    batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
+    batch_inputs!(Xs::AbstractVector{<:AbstractVector{<:DenseVector}}, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::DenseArray{<:Real,3}
 
-Given a collection `Xs` of input sequences, returns a vector of length T whose tᵗʰ element is a D×B matrix of inputs at time t across all sequences in a given batch.
-Here T is the maximum time length in the batch, D is the dimensionality of the input elements of sequences and B is the batch size.
+Given a B-length collection `Xs`, whose each element is a sequence vector of D-dimensional input features, pads sequences to ensure every sequence has the same length `T` that is a multiple of `multiplicity`. Then it arranges these padded sequences into a single tensor of size D×T×B.
 """
-function batch_inputs!(Xs, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::Vector{<:DenseMatrix}
+function batch_inputs!(Xs::AbstractVector{<:AbstractVector{<:DenseVector}}, multiplicity::Integer, maxT::Integer = maximum(length, Xs))::DenseArray{<:Real,3}
    # find the smallest multiple of `multiplicity` that is no less than `maxT`
    newT = ceil(Int, maxT / multiplicity)multiplicity
-   # initialize & populate padding vector
-   z = (similar ∘ first ∘ first)(Xs)
-   fill!(z, zero(eltype(z)))
+   # construct padding element vector
+   z = (zero ∘ first ∘ first)(Xs)
    # resize each sequence `xs` to the size `newT` by paddding it with vector z of zeros
    for xs ∈ Xs
       T = length(xs)
       resize!(xs, newT)
       xs[(T+1):end] .= Ref(z)
    end
-   # for each time step `t`, get `t`ᵗʰ vector x across all sequences and concatenate them into matrix
-   return [hcat(getindex.(Xs, t)...) for t ∈ 1:newT]
+   # first concatenate D-dimensional input features of each padded sequence of length newT into the single vector of length D*newT, then concatenate the resulting vectors along the 2nd dimension to get the D*newT×B matrix and then finally reshape the resulting matrix into D×newT×B tensor
+      X = reshape(reduce(hcat, reduce.(vcat, Xs)), length(z), newT, :)
+      # check: X == cat(reduce.(hcat, Xs)...; dims=3)
+   return X
 end
 
 """
-    batch_targets(ys::VV, output_dim::Integer, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
+    batch_targets(ys::AbstractVector{V}, output_dim::Integer, maxT::Integer = maximum(length, ys))::V where V <: DenseVector{<:Integer}
 
-Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction Ŷs, which is assumed to be a vector of length T whose tᵗʰ element is a D×B matrix of predictions at time t across all sequences in a given batch.
-Here T is the maximum time length in the batch, D is the dimensionality of the output and B is the batch size.
+Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction `Ŷs`, which is assumed to be a tensor od dimensions D×B×T. Here D denotes the dimensionality of the output, B is the batch size and T is the maximum time length in the batch.
 """
-function batch_targets(ys::VV, output_dim::Integer, maxT::Integer = maximum(length, ys))::VV where VV <: DenseVector{<:DenseVector{<:Integer}}
+function batch_targets(ys::AbstractVector{V}, output_dim::Integer, maxT::Integer = maximum(length, ys))::V where V <: DenseVector{<:Integer}
    batch_size = length(ys)
-   linidxs = similar(ys, maxT)
-   idxs = similar(first(ys), batch_size)
-   offsets = range(0; step=output_dim, length=batch_size)
-   @views for t ∈ 1:maxT
+   cartesian_indices = Vector{Vector{CartesianIndex{3}}}(undef, maxT)
+   cartesian_indices_t = Vector{CartesianIndex{3}}(undef, batch_size)
+   @views for time ∈ 1:maxT
       n = 0
-      for (y, offset) ∈ zip(ys, offsets)
-         if t <= length(y)
+      for (batch, yᵇ) ∈ enumerate(ys)
+         if time <= length(yᵇ)
             n += 1
-            idxs[n] = offset + y[t]
+            cartesian_indices_t[n] = CartesianIndex(yᵇ[time], batch, time)
          end
       end
-      linidxs[t] = idxs[1:n]
+      cartesian_indices[time] = cartesian_indices_t[1:n]
    end
-   return linidxs
+   cartesian_indices′ = reduce(vcat, cartesian_indices)
+   linear_indices = LinearIndices((output_dim, batch_size, maxT))[cartesian_indices′]
+   return linear_indices
 end
 
 """
-    batch(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
+    batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}}, ys::DenseVector{<:DenseVector}, batch_size::Integer, multiplicity::Integer)
 
 Arranges dataset into batches such that the number of batches approximately equals the ratio of dataset size to `batch_size`.
-Batches are formed by first sorting sequences in the dataset according to their length (which minimizes the total number of elements to pad in inputs) and then partitioning the result into batches such that each batch approximately the same total number of sequence elements (this ensures that each batch takes up the same amount of memory, so as to avoid memory overflow).
+Batches are formed by first sorting sequences in the dataset according to their length (which minimizes the total number of elements to pad in inputs) and then partitioning the result into batches such that each batch approximately the same total number of sequence elements (this ensures that each batch takes up the same amount of memory, so as to avoid memory overflow when loading data into the GPU).
 """
-function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}},
+function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
                ys::DenseVector{<:DenseVector},
                output_dim::Integer,
                batch_size::Integer,
@@ -124,7 +124,9 @@ function batch(Xs::DenseVector{<:DenseVector{<:DenseVector}},
    firstidxs = [1; @view(lastidxs[1:(end-1)]) .+ 1]
 
    maxTs = length.(@view Xs[lastidxs])
-   xs_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   X_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    linidxs_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   return xs_batches, linidxs_batches, maxTs
+
+   batches = [(X = X, linidxs = linidxs, maxT = maxT) for (X, linidxs, maxT) ∈ zip(X_batches, linidxs_batches, maxTs)]
+   return batches
 end

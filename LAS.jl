@@ -258,12 +258,12 @@ State₀(dim_c::Integer, dim_d::Integer, dim_p::Integer) =
 Base.show(io::IO, s₀::State₀) = print(io, "State₀(", size(s₀.context, 1), ", ", size(s₀.decoding, 1), ", ", size(s₀.prediction, 1), ")")
 
 struct LAS{M, E, Aϕ, Aψ, D, C}
-   state₀      :: State₀{M} # trainable initial state of the model
-   listen      :: E         # encoder function
-   attention_ψ :: Aψ        # keys attention context function
-   attention_ϕ :: Aϕ        # query attention context function
-   spell       :: D         # LSTM decoder
-   infer       :: C         # character distribution inference function
+   state₀  :: State₀{M} # trainable initial state of the model
+   listen  :: E         # encoder function
+   key_ψ   :: Aψ        # keys attention context function
+   query_ϕ :: Aϕ        # query attention context function
+   spell   :: D         # LSTM decoder
+   infer   :: C         # character distribution inference function
 end
 
 @functor LAS
@@ -276,14 +276,14 @@ function LAS(encoder_dims::NamedTuple,
    dim_encoding = 2last(encoder_dims.pblstms_out)
    dim_decoding =  last(decoder_out_dims)
 
-   state₀       = State₀(dim_encoding, dim_decoding, out_dim)
-   listen      = Encoder(encoder_dims)
-   attention_ψ = MLP(dim_encoding, attention_dim)
-   attention_ϕ = MLP(dim_decoding, attention_dim)
-   spell       = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
-   infer       = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
+   state₀  = State₀(dim_encoding, dim_decoding, out_dim)
+   listen  = Encoder(encoder_dims)
+   key_ψ   = MLP(dim_encoding, attention_dim)
+   query_ϕ = MLP(dim_decoding, attention_dim)
+   spell   = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
+   infer   = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
 
-   las = LAS(state₀, listen, attention_ψ, attention_ϕ, spell, infer) |> gpu
+   las = LAS(state₀, listen, key_ψ, query_ϕ, spell, infer) |> gpu
    return las
 end
 
@@ -301,8 +301,8 @@ function Base.show(io::IO, m::LAS)
       "LAS(\n    ",
            m.state₀, ",\n    ",
            m.listen, ",\n    ",
-           m.attention_ψ, ",\n    ",
-           m.attention_ϕ, ",\n    ",
+           m.key_ψ, ",\n    ",
+           m.query_ϕ, ",\n    ",
            m.spell, ",\n    ",
            m.infer,
       "\n)"
@@ -321,15 +321,15 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    prediction = repeat(m.state₀.prediction, 1, batch_size)
    # precompute keys ψ(H) by gluing the slices of Hs along the batch dimension into a single D×TB matrix, then
    # passing it through the ψ dense layer in a single pass and then reshaping the result back into D′×T×B tensor
-   ψHs = reshape(m.attention_ψ(reshape(Hs, size(Hs,1), :)), size(m.attention_ψ.W, 1), :, batch_size)
-   # ψhs = m.attention_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
+   ψHs = reshape(m.key_ψ(reshape(Hs, size(Hs,1), :)), size(m.key_ψ.W, 1), :, batch_size)
+   # ψhs = m.key_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
-   ŷs = Buffer(Vector{M}(undef, maxT), false)
-   @inbounds for t ∈ eachindex(ŷs)
+   Ŷs = Buffer(Hs, size(prediction, 1), batch_size, maxT) # D×B×T output tensor
+   @inbounds for t ∈ axes(Ŷs, 2)
       # compute decoder state
       decoding = m.spell([decoding; prediction; context])::M
       # compute query ϕ(sᵢ)
-      ϕsᵢ = m.attention_ϕ(decoding)
+      ϕsᵢ = m.query_ϕ(decoding)
       # compute energies via batch matrix multiplication
       # @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
       Eᵢs = einsum(EinCode{((1,2), (1,3,2)), (3,2)}(), (ϕsᵢ, ψHs))::M
@@ -341,12 +341,12 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
       context = einsum(EinCode{((1,2), (3,1,2)), (3,2)}(), (αᵢs, Hs))::M
       # check: context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
       # predict probability distribution over character alphabet
-      ŷs[t] = prediction = m.infer([decoding; context])
+      Ŷs[:,:,t] = prediction = m.infer([decoding; context])
    end
-   return copy(ŷs)
+   return copy(Ŷs)
 end
 
-function (m::LAS)(xs::AbstractVector{<:DenseMatrix}, maxT::Integer = length(xs))
+function (m::LAS)(xs::AbstractVector{<:DenseMatrix}, maxT::Integer)
    # compute input encoding, which are also values for the attention layer
    hs = m.listen(xs)
    dim_out, batch_size = size(first(hs))
@@ -358,7 +358,7 @@ function (m::LAS)(xs::AbstractVector{<:DenseMatrix}, maxT::Integer = length(xs))
    return ŷs
 end
 
-function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer = size(Xs,2))
+function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer)
    # compute input encoding, which are also values for the attention layer
    Hs = m.listen(Xs)
    # perform attend and spell steps
@@ -380,15 +380,16 @@ end
 # dim_LSTM_speller = 512
 # initialize with uniform(-0.1, 0.1)
 
-function loss(m::LAS, xs::DenseVector{<:DenseMatrix{<:Real}}, linidxs::DenseVector{<:DenseVector{<:Integer}})::Real
-   ŷs = m(xs, length(linidxs))
-   l = -sum(sum.(getindex.(ŷs, linidxs)))
+function loss(m::LAS, X::DenseArray{<:Real,3}, linidxs::DenseVector{<:Integer}, maxT::Integer)::Real
+   Ŷs = m(X, maxT)
+   l = -sum(Ŷs[linidxs])
    return l
 end
 
-function loss(m::LAS, xs_batches::DenseVector{<:DenseVector{<:DenseMatrix{<:Real}}},
-         linidxs_batches::DenseVector{<:DenseVector{<:DenseVector{<:Integer}}})::Real
-   return sum(loss.((m,), xs_batches, linidxs_batches))
+function loss(m::LAS, batch::NamedTuple{(:X, :linidxs, :maxT), Tuple{T, V, I}} where {T <: DenseArray{<:Real,3}, V <: DenseVector{<:Integer}, I <: Integer})::Real
+    Ŷs = m(batch.X, batch.maxT)
+    l = -sum(Ŷs[batch.linidxs])
+    return l
 end
 
 # best path decoding
@@ -406,81 +407,79 @@ function predict(m::LAS, xs::DenseVector{<:DenseVector{<:Real}}, labels)::DenseV
 end
 
 function main(; n_epochs::Integer=1, saved_results::Bool=false)
-   # load data & construct the neural net
-   las, phonemes,
-   Xs_train, linidxs_train, maxTs_train,
-   Xs_val,   linidxs_val,   maxTs_val =
-   let batch_size = 77, valsetsize = 344
-      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
-      out_dim = length(PHONEMES)
+# load data & construct the neural net
+las, phonemes,
+data_train, data_val =
+let batch_size = 77, valsetsize = 344
+   JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
+   out_dim = length(PHONEMES)
 
-      if saved_results
-         JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
-      else
-         # encoder_dims = (
-         #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
-         #    pblstms_out = (2, 2, 2)
-         # )
-         # attention_dim = 2
-         # decoder_out_dim = 2
-         encoder_dims = (
-            blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
-            pblstms_out = (128, 128, 128)
-         )
-         attention_dim   = 128
-         decoder_out_dim = 128
-         las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
-      end
-
-      multiplicity = time_squashing_factor(las)
-      Xs_train, linidxs_train, maxTs_train = batch(Xs, ys, out_dim, batch_size, multiplicity)
-
-      JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
-      Xs_val, linidxs_val, maxTs_val = batch(Xs[1:valsetsize], ys[1:valsetsize], out_dim, batch_size, multiplicity)
-
-      las, PHONEMES,
-      Xs_train, linidxs_train, maxTs_train,
-      Xs_val,   linidxs_val,   maxTs_val
+   if saved_results
+      JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
+   else
+      encoder_dims = (
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
+         pblstms_out = (2, 2, 2)
+      )
+      attention_dim = 2
+      decoder_out_dim = 2
+      # encoder_dims = (
+      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
+      #    pblstms_out = (128, 128, 128)
+      # )
+      # attention_dim   = 128
+      # decoder_out_dim = 128
+      las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
    end
 
-   θ = Flux.params(las)
-   # 1. optimiser = RMSProp()       # 5 epochs
-   # 2. optimiser = ADAM()          # 2 epochs
-   # 3. optimiser = ADAM(0.0002)    # 1 epoch
-   # 4. optimiser = RMSProp(0.0001) # 2 epochs
-   optimiser = NADAM(0.0001)     # 2 epochs
-   # optimiser = AMSGrad(0.0001)       # 2 epoch
-   # optimiser = AMSGrad(0.0001)
-   # optimiser = AMSGrad(0.00001)
+   multiplicity = time_squashing_factor(las)
+   data_train = batch_dataset(Xs, ys, out_dim, batch_size, multiplicity)
 
-   loss_val_saved = loss(las, Xs_val, linidxs_val)
-   @info "Validation loss before start of the training is $loss_val_saved"
+   JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
+   data_val = batch_dataset(Xs[1:valsetsize], ys[1:valsetsize], out_dim, batch_size, multiplicity)
 
-   nds = ndigits(length(Xs_train))
-   for epoch ∈ 1:n_epochs
-      @info "Starting to train epoch $epoch with optimiser $(typeof(optimiser))$(getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))"
-      println(typeof(optimiser), getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))
-      duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
-         # move current batch to GPU
-         xs = gpu.(xs)
-         reset!(las)
-         l, pb = Flux.pullback(θ) do
-            loss(las, xs, linidxs)
-         end
-         println("Loss for a batch # ", ' '^(nds - ndigits(n)), n, " is ", l)
-         dldθ = pb(one(l))
-         Flux.Optimise.update!(optimiser, θ, dldθ)
+   las, PHONEMES,
+   data_train, data_val
+end
+
+θ = Flux.params(las)
+# 1. optimiser = RMSProp()       # 5 epochs
+# 2. optimiser = ADAM()          # 2 epochs
+# 3. optimiser = ADAM(0.0002)    # 1 epoch
+# 4. optimiser = RMSProp(0.0001) # 2 epochs
+optimiser = NADAM(0.0001)     # 2 epochs
+# optimiser = AMSGrad(0.0001)       # 2 epoch
+# optimiser = AMSGrad(0.0001)
+# optimiser = AMSGrad(0.00001)
+
+loss_val_saved = loss(las, Xs_val, linidxs_val)
+@info "Validation loss before start of the training is $loss_val_saved"
+
+nds = ndigits(length(Xs_train))
+for epoch ∈ 1:n_epochs
+   @info "Starting to train epoch $epoch with optimiser $(typeof(optimiser))$(getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))"
+   println(typeof(optimiser), getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))
+   duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
+      # move current batch to GPU
+      xs = gpu.(xs)
+      reset!(las)
+      l, pb = Flux.pullback(θ) do
+         loss(las, xs, linidxs)
       end
-      duration = round(duration / 60; sigdigits = 1)
-      @info "Completed training epoch $epoch in $duration minutes"
-      loss_val = loss(las, Xs_val, linidxs_val)
-      @info "Validation loss after training epoch $epoch is $loss_val"
-      if loss_val < loss_val_saved
-         loss_val_saved = loss_val
-         JLD2.@save "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
-         @info "Saved results after training epoch $epoch to ListenAttendSpell/models/TIMIT/las.jld2"
-      end
+      println("Loss for a batch # ", ' '^(nds - ndigits(n)), n, " is ", l)
+      dldθ = pb(one(l))
+      Flux.Optimise.update!(optimiser, θ, dldθ)
    end
+   duration = round(duration / 60; sigdigits = 1)
+   @info "Completed training epoch $epoch in $duration minutes"
+   loss_val = loss(las, Xs_val, linidxs_val)
+   @info "Validation loss after training epoch $epoch is $loss_val"
+   if loss_val < loss_val_saved
+      loss_val_saved = loss_val
+      JLD2.@save "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
+      @info "Saved results after training epoch $epoch to ListenAttendSpell/models/TIMIT/las.jld2"
+   end
+end
 end
 
 
