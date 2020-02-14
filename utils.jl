@@ -1,3 +1,9 @@
+const StatefulOptimiser = Union{Flux.Momentum, Flux.Nesterov, Flux.RMSProp, Flux.ADAM, Flux.RADAM, Flux.AdaMax, Flux.ADAGrad, Flux.ADADelta, Flux.AMSGrad, Flux.NADAM}
+
+function Base.show(io::IO, optimiser::StatefulOptimiser)
+    print(io, typeof(optimiser), getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))
+end
+
 @adjoint function reduce(::typeof(hcat), As::AbstractVector{<:AbstractVecOrMat})
    cumsizes = cumsum(size.(As, 2))
    return reduce(hcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_horz(sz, Δ, A), cumsizes, As))
@@ -127,6 +133,24 @@ function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
    X_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    linidxs_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
 
-   batches = [(X = X, linidxs = linidxs, maxT = maxT) for (X, linidxs, maxT) ∈ zip(X_batches, linidxs_batches, maxTs)]
+   batches = [(X, linidxs, maxT) for (X, linidxs, maxT) ∈ zip(X_batches, linidxs_batches, maxTs)]
    return batches
+end
+
+"""
+    mean_prob_of_correct_prediction(l::Real, total_length::Integer)::Real
+    mean_prob_of_correct_prediction(l::Real, linidxs::DenseVector{<:Integer})::Real
+    mean_prob_of_correct_prediction(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real
+
+Given a loss `l` for either a batch of length `total_length` or a batch with linear indices `linidxs` of correct labels or a collection of batches, `dataset`, returns mean probability of the correct prediction
+"""
+mean_prob_of_correct_prediction(l::Real, total_length::Integer)::Real = exp(-l / total_length)
+mean_prob_of_correct_prediction(l::Real, linidxs::DenseVector{<:Integer})::Real = exp(-l / length(linidxs))
+mean_prob_of_correct_prediction(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real =
+   exp(-l / sum(((_, linidxs, _),) -> length(linidxs), dataset))
+
+function printlog(io::IO, message...)
+   println(io, message...)
+   flush(io)
+   println(message...)
 end

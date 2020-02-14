@@ -14,6 +14,8 @@ using JLD2
 using IterTools
 using Base.Iterators: reverse
 using OMEinsum
+using Logging
+using LoggingExtras
 
 include("utils.jl")
 
@@ -380,16 +382,10 @@ end
 # dim_LSTM_speller = 512
 # initialize with uniform(-0.1, 0.1)
 
-function loss(m::LAS, X::DenseArray{<:Real,3}, linidxs::DenseVector{<:Integer}, maxT::Integer)::Real
+function loss(m::LAS, X::DenseArray{<:Real,3}, linidxs::DenseVector{<:Integer}, maxT::Integer)
    Ŷs = m(X, maxT)
    l = -sum(Ŷs[linidxs])
    return l
-end
-
-function loss(m::LAS, batch::NamedTuple{(:X, :linidxs, :maxT), Tuple{T, V, I}} where {T <: DenseArray{<:Real,3}, V <: DenseVector{<:Integer}, I <: Integer})::Real
-    Ŷs = m(batch.X, batch.maxT)
-    l = -sum(Ŷs[batch.linidxs])
-    return l
 end
 
 # best path decoding
@@ -409,7 +405,7 @@ end
 function main(; n_epochs::Integer=1, saved_results::Bool=false)
 # load data & construct the neural net
 las, phonemes,
-data_train, data_val =
+data_train, data_val, total_length_val =
 let batch_size = 77, valsetsize = 344
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
    out_dim = length(PHONEMES)
@@ -417,18 +413,18 @@ let batch_size = 77, valsetsize = 344
    if saved_results
       JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
    else
-      encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
-         pblstms_out = (2, 2, 2)
-      )
-      attention_dim = 2
-      decoder_out_dim = 2
       # encoder_dims = (
-      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
-      #    pblstms_out = (128, 128, 128)
+      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
+      #    pblstms_out = (2, 2, 2)
       # )
-      # attention_dim   = 128
-      # decoder_out_dim = 128
+      # attention_dim = 2
+      # decoder_out_dim = 2
+      encoder_dims = (
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
+         pblstms_out = (128, 128, 128)
+      )
+      attention_dim   = 128
+      decoder_out_dim = 128
       las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
    end
 
@@ -436,48 +432,66 @@ let batch_size = 77, valsetsize = 344
    data_train = batch_dataset(Xs, ys, out_dim, batch_size, multiplicity)
 
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
-   data_val = batch_dataset(Xs[1:valsetsize], ys[1:valsetsize], out_dim, batch_size, multiplicity)
+   ys_val = ys[1:valsetsize]
+   total_length_val = sum(length, ys_val)
+   data_val = batch_dataset(Xs[1:valsetsize], ys_val, out_dim, batch_size, multiplicity)
 
    las, PHONEMES,
-   data_train, data_val
+   data_train, data_val, total_length_val
 end
 
 θ = Flux.params(las)
 # 1. optimiser = RMSProp()       # 5 epochs
-# 2. optimiser = ADAM()          # 2 epochs
+optimiser = ADAM()          # 2 epochs
 # 3. optimiser = ADAM(0.0002)    # 1 epoch
 # 4. optimiser = RMSProp(0.0001) # 2 epochs
-optimiser = NADAM(0.0001)     # 2 epochs
+# optimiser = NADAM(0.0001)     # 2 epochs
 # optimiser = AMSGrad(0.0001)       # 2 epoch
 # optimiser = AMSGrad(0.0001)
 # optimiser = AMSGrad(0.00001)
 
-loss_val_saved = loss(las, Xs_val, linidxs_val)
-@info "Validation loss before start of the training is $loss_val_saved"
+# setup logging to both console and file
+filehandle = open("ListenAttendSpell/train_log.txt"; append=true)
+global_logger(TeeLogger(ConsoleLogger(), FileLogger(SimpleLogger(filehandle), true)))
 
-nds = ndigits(length(Xs_train))
+loss_val_saved = sum(data_val) do (X, linidxs, maxT)
+    reset!(las)
+    loss(las, X, linidxs, maxT)
+end
+@info "Validation loss before start of the training is $loss_val_saved"
+mean_prob = mean_prob_of_correct_prediction(loss_val_saved, total_length_val)
+@info "Mean probability of the correct prediction before start of the training is $mean_prob"
+
+nds = ndigits(length(data_train))
+# main training loop
 for epoch ∈ 1:n_epochs
-   @info "Starting to train epoch $epoch with optimiser $(typeof(optimiser))$(getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))"
-   println(typeof(optimiser), getproperty.(Ref(optimiser), propertynames(optimiser)[1:end-1]))
-   duration = @elapsed for (n, (xs, linidxs)) ∈ enumerate(zip(Xs_train, linidxs_train))
+   @info "Starting to train epoch $epoch with an" optimiser
+   duration = @elapsed for (n, (X, linidxs, maxT)) ∈ enumerate(data_train)
       # move current batch to GPU
-      xs = gpu.(xs)
+      X = gpu(X)
       reset!(las)
       l, pb = Flux.pullback(θ) do
-         loss(las, xs, linidxs)
+         loss(las, X, linidxs, maxT)
       end
-      println("Loss for a batch # ", ' '^(nds - ndigits(n)), n, " is ", l)
-      dldθ = pb(one(l))
-      Flux.Optimise.update!(optimiser, θ, dldθ)
+      printlog(filehandle, "Loss for a batch # ", ' '^(nds - ndigits(n)), n, " is ", l)
+      θ̄ = pb(one(l))
+      Flux.Optimise.update!(optimiser, θ, θ̄)
    end
-   duration = round(duration / 60; sigdigits = 1)
+   duration = round(duration / 60; sigdigits = 2)
    @info "Completed training epoch $epoch in $duration minutes"
-   loss_val = loss(las, Xs_val, linidxs_val)
+   loss_val = sum(data_val) do (X, linidxs, maxT)
+       reset!(las)
+       loss(las, X, linidxs, maxT)
+   end
    @info "Validation loss after training epoch $epoch is $loss_val"
+   mean_prob = mean_prob_of_correct_prediction(loss_val, total_length_val)
+   @info "Mean probability of the correct prediction after training epoch $epoch is $mean_prob"
+   printlog(filehandle)
    if loss_val < loss_val_saved
       loss_val_saved = loss_val
       JLD2.@save "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
       @info "Saved results after training epoch $epoch to ListenAttendSpell/models/TIMIT/las.jld2"
+      printlog(filehandle)
    end
 end
 end
