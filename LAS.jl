@@ -2,8 +2,8 @@
 
 module ListenAttendSpell
 
-# using CuArrays
-# CuArrays.allowscalar(false)
+using CuArrays
+CuArrays.allowscalar(false)
 
 using Flux
 using Flux: reset!, onecold, @functor, Recur, LSTMCell
@@ -46,7 +46,7 @@ function BLSTM(forward::Recur{LSTMCell{M,V}}, backward::Recur{LSTMCell{M,V}}) wh
     return BLSTM(forward, backward, out_dim)
 end
 
-Base.show(io::IO, l::BLSTM)  = print(io,  "BLSTM(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
+Base.show(io::IO, l::BLSTM{M,V}) where {M,V} = print(io,  "BLSTM{$M,$V}(", size(l.forward.cell.Wi, 2), ", ", l.dim_out, ")")
 
 function flip(f, xs::V) where V <: AbstractVector
    rev_time = reverse(eachindex(xs))
@@ -130,7 +130,7 @@ function PBLSTM(forward::Recur{LSTMCell{M,V}}, backward::Recur{LSTMCell{M,V}}) w
    return PBLSTM(forward, backward, out_dim)
 end
 
-Base.show(io::IO, l::PBLSTM) = print(io, "PBLSTM(", size(l.forward.cell.Wi, 2)÷2, ", ", l.dim_out, ")")
+Base.show(io::IO, l::PBLSTM{M,V}) where {M,V} = print(io, "PBLSTM{$M,$V}(", size(l.forward.cell.Wi, 2)÷2, ", ", l.dim_out, ")")
 
 """
     (m::PBLSTM)(xs::DenseVector{<:DenseVecOrMat}) -> DenseVector{<:DenseVecOrMat}
@@ -247,17 +247,15 @@ CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoft
 Initial state variables
 """
 mutable struct State₀{M <: DenseMatrix}
-   context    :: M
-   decoding   :: M
-   prediction :: M
+   context  :: M
+   decoding :: M
 end
 
 @functor State₀
 
-State₀(dim_c::Integer, dim_d::Integer, dim_p::Integer) =
-   State₀(zeros(Float32, dim_c, 1), zeros(Float32, dim_d, 1), zeros(Float32, dim_p, 1))
+State₀(dim_c::Integer, dim_d::Integer) = State₀(zeros(Float32, dim_c, 1), zeros(Float32, dim_d, 1))
 
-Base.show(io::IO, s₀::State₀) = print(io, "State₀(", size(s₀.context, 1), ", ", size(s₀.decoding, 1), ", ", size(s₀.prediction, 1), ")")
+Base.show(io::IO, s₀::State₀{M}) where M = print(io, "State₀{$M}(", size(s₀.context, 1), ", ", size(s₀.decoding, 1), ")")
 
 struct LAS{M, E, Aϕ, Aψ, D, C}
    state₀  :: State₀{M} # trainable initial state of the model
@@ -278,15 +276,14 @@ function LAS(encoder_dims::NamedTuple,
    dim_encoding = 2last(encoder_dims.pblstms_out)
    dim_decoding =  last(decoder_out_dims)
 
-   state₀  = State₀(dim_encoding, dim_decoding, out_dim)
+   state₀  = State₀(dim_encoding, dim_decoding)
    listen  = Encoder(encoder_dims)
    key_ψ   = MLP(dim_encoding, attention_dim)
    query_ϕ = MLP(dim_decoding, attention_dim)
    spell   = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
    infer   = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
 
-   las = LAS(state₀, listen, key_ψ, query_ϕ, spell, infer) |> gpu
-   return las
+   LAS(state₀, listen, key_ψ, query_ϕ, spell, infer)
 end
 
 function LAS(encoder_dims::NamedTuple,
@@ -315,12 +312,28 @@ end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-@inline function decode(m::LAS{M}, Hs::DenseArray{<:Real,3}, maxT::Integer) where M <: DenseMatrix
+function getprediction₀(::Type{Matrix{T}}, dim_out::Integer, batch_size::Integer) where T <: Real
+   prediction₀ = [ones(T, 1, batch_size);
+                  zeros(T, dim_out-1, batch_size)]
+   return prediction₀
+end
+function getprediction₀(::Type{CuMatrix{T,P}}, dim_out::Integer, batch_size::Integer) where {T <: Real,P}
+   prediction₀ = [CuArrays.ones(T, 1, batch_size);
+                  CuArrays.zeros(T, dim_out-1, batch_size)]
+   return prediction₀
+end
+
+@inline function decode(m::LAS{M}, Hs::T, maxT::Integer) where {M <: DenseMatrix, T <: DenseArray{<:Real,3}}
+   prediction₀ = getprediction₀(M, length(first(m.infer).b), size(Hs, 3))
+   M′ = addparent(M, T)
+   return decode(m, Hs, maxT, prediction₀, M′)
+end
+
+@inline function decode(m::LAS{M}, Hs::DenseArray{<:Real,3}, maxT::Integer, prediction::M, M′::DataType) where M <: DenseMatrix
    batch_size = size(Hs, 3)
    # initialize state for every sequence in a batch
-   context    = repeat(m.state₀.context,    1, batch_size)
-   decoding   = repeat(m.state₀.decoding,   1, batch_size)
-   prediction = repeat(m.state₀.prediction, 1, batch_size)
+   context  = repeat(m.state₀.context,  1, batch_size)
+   decoding = repeat(m.state₀.decoding, 1, batch_size)
    # precompute keys ψ(H) by gluing the slices of Hs along the batch dimension into a single D×TB matrix, then
    # passing it through the ψ dense layer in a single pass and then reshaping the result back into D′×T×B tensor
    ψHs = reshape(m.key_ψ(reshape(Hs, size(Hs,1), :)), size(m.key_ψ.W, 1), :, batch_size)
@@ -329,21 +342,21 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
    Ŷs = Buffer(Hs, size(prediction, 1), batch_size, maxT) # D×B×T output tensor
    @inbounds for t ∈ axes(Ŷs, 2)
       # compute decoder state
-      decoding = m.spell([decoding; prediction; context])::M
+      decoding = m.spell([decoding; prediction; context]::M)::M
       # compute query ϕ(sᵢ)
       ϕsᵢ = m.query_ϕ(decoding)
       # compute energies via batch matrix multiplication
       # @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
-      Eᵢs = einsum(EinCode{((1,2), (1,3,2)), (3,2)}(), (ϕsᵢ, ψHs))::M
+      Eᵢs = einsum(EinCode{((1,2), (1,3,2)), (3,2)}(), (ϕsᵢ, ψHs))::M′
       # check: Eᵢs ≈ reduce(hcat, diag.((ϕsᵢ',) .* ψhs))'
       # compute attentions weights
       αᵢs = softmax(Eᵢs)
       # compute attended context using Einstein summation convention, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
       # @ein context[d,b] := αᵢs[t,b] * Hs[d,t,b]
-      context = einsum(EinCode{((1,2), (3,1,2)), (3,2)}(), (αᵢs, Hs))::M
+      context = einsum(EinCode{((1,2), (3,1,2)), (3,2)}(), (αᵢs, Hs))::M′
       # check: context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
       # predict probability distribution over character alphabet
-      Ŷs[:,:,t] = prediction = m.infer([decoding; context])
+      Ŷs[:,:,t] = prediction = m.infer([decoding; context]::M)
    end
    return copy(Ŷs)
 end
@@ -356,23 +369,23 @@ function (m::LAS)(xs::AbstractVector{<:DenseMatrix}, maxT::Integer)
    # along the 1st dimension and to get singe DT×B matrix and then reshaping it into D×T×B tensor
    Hs = reshape(reduce(vcat, hs), dim_out, :, batch_size)
    # perform attend and spell steps
-   ŷs = decode(m, Hs, maxT)
-   return ŷs
+   Ŷs = decode(m, Hs, maxT)
+   return Ŷs
 end
 
 function (m::LAS)(Xs::DenseArray{<:Real,3}, maxT::Integer)
    # compute input encoding, which are also values for the attention layer
    Hs = m.listen(Xs)
    # perform attend and spell steps
-   ŷs = decode(m, Hs, maxT)
-   return ŷs
+   Ŷs = decode(m, Hs, maxT)
+   return Ŷs
 end
 
 function (m::LAS)(x::AbstractVector{<:DenseVector})
    T = length(x)
    X = reshape(reduce(hcat, pad(x, time_squashing_factor(m))), Val(3))
-   ŷs = dropdims.(m(X, T); dims=2)
-   return ŷs
+   Ŷ = dropdims.(m(X, T); dims=2)
+   return Ŷ
 end
 
 # dim_encoding  = (512, 512, 512, 512)
@@ -413,18 +426,18 @@ let batch_size = 77, valsetsize = 344
    if saved_results
       JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
    else
-      # encoder_dims = (
-      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
-      #    pblstms_out = (2, 2, 2)
-      # )
-      # attention_dim = 2
-      # decoder_out_dim = 2
       encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
-         pblstms_out = (128, 128, 128)
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 2),
+         pblstms_out = (2, 2, 2)
       )
-      attention_dim   = 128
-      decoder_out_dim = 128
+      attention_dim = 2
+      decoder_out_dim = 2
+      # encoder_dims = (
+      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
+      #    pblstms_out = (128, 128, 128)
+      # )
+      # attention_dim   = 128
+      # decoder_out_dim = 128
       las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
    end
 
@@ -436,7 +449,7 @@ let batch_size = 77, valsetsize = 344
    total_length_val = sum(length, ys_val)
    data_val = batch_dataset(Xs[1:valsetsize], ys_val, out_dim, batch_size, multiplicity)
 
-   las, PHONEMES,
+   las |> gpu, PHONEMES,
    data_train, data_val, total_length_val
 end
 
@@ -467,8 +480,6 @@ nds = ndigits(length(data_train))
 for epoch ∈ 1:n_epochs
    @info "Starting to train epoch $epoch with an" optimiser
    duration = @elapsed for (n, (X, linidxs, maxT)) ∈ enumerate(data_train)
-      # move current batch to GPU
-      X = gpu(X)
       reset!(las)
       l, pb = Flux.pullback(θ) do
          loss(las, X, linidxs, maxT)

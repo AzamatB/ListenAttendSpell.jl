@@ -1,3 +1,6 @@
+addparent(A::Type{<:AbstractArray}, P′::DataType) = A
+addparent(::Type{CuArray{T,N,P}}, P′::DataType) where {T,N,P} = CuArray{T,N,P′}
+
 const StatefulOptimiser = Union{Flux.Momentum, Flux.Nesterov, Flux.RMSProp, Flux.ADAM, Flux.RADAM, Flux.AdaMax, Flux.ADAGrad, Flux.ADADelta, Flux.AMSGrad, Flux.NADAM}
 
 function Base.show(io::IO, optimiser::StatefulOptimiser)
@@ -133,7 +136,7 @@ function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
    X_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
    linidxs_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
 
-   batches = [(X, linidxs, maxT) for (X, linidxs, maxT) ∈ zip(X_batches, linidxs_batches, maxTs)]
+   batches = [(X |> gpu, linidxs, maxT) for (X, linidxs, maxT) ∈ zip(X_batches, linidxs_batches, maxTs)]
    return batches
 end
 
