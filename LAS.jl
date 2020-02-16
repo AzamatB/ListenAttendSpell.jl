@@ -283,7 +283,7 @@ function LAS(encoder_dims::NamedTuple,
    spell   = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
    infer   = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
 
-   LAS(state₀, listen, key_ψ, query_ϕ, spell, infer)
+   LAS(state₀, listen, key_ψ, query_ϕ, spell, infer) |> gpu
 end
 
 function LAS(encoder_dims::NamedTuple,
@@ -317,9 +317,9 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
                   zeros(T, dim_out-1, 1)]
    return prediction₀
 end
-@inline function getprediction₀(::Type{CuMatrix{T,P}}, dim_out::Integer) where {T <: Real, P}
+@inline function getprediction₀(M::Type{CuMatrix{T,P}}, dim_out::Integer) where {T <: Real, P}
    prediction₀ = [CuArrays.ones(T, 1, 1);
-                  CuArrays.zeros(T, dim_out-1, 1)]
+                  CuArrays.zeros(T, dim_out-1, 1)]::M
    return prediction₀
 end
 
@@ -449,7 +449,7 @@ let batch_size = 77, valsetsize = 344
    total_length_val = sum(length, ys_val)
    data_val = batch_dataset(Xs[1:valsetsize], ys_val, out_dim, batch_size, multiplicity)
 
-   las |> gpu, PHONEMES,
+   las, PHONEMES,
    data_train, data_val, total_length_val
 end
 
