@@ -312,37 +312,35 @@ end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-function getprediction₀(::Type{Matrix{T}}, dim_out::Integer, batch_size::Integer) where T <: Real
-   prediction₀ = [ones(T, 1, batch_size);
-                  zeros(T, dim_out-1, batch_size)]
+@inline function getprediction₀(::Type{Matrix{T}}, dim_out::Integer) where T <: Real
+   prediction₀ = [one(T);
+                  zeros(T, dim_out-1, 1)]
    return prediction₀
 end
-function getprediction₀(::Type{CuMatrix{T,P}}, dim_out::Integer, batch_size::Integer) where {T <: Real,P}
-   prediction₀ = [CuArrays.ones(T, 1, batch_size);
-                  CuArrays.zeros(T, dim_out-1, batch_size)]
+@inline function getprediction₀(::Type{CuMatrix{T,P}}, dim_out::Integer) where {T <: Real, P}
+   prediction₀ = [CuArrays.ones(T, 1, 1);
+                  CuArrays.zeros(T, dim_out-1, 1)]
    return prediction₀
 end
 
 @inline function decode(m::LAS{M}, Hs::T, maxT::Integer) where {M <: DenseMatrix, T <: DenseArray{<:Real,3}}
-   prediction₀ = getprediction₀(M, length(first(m.infer).b), size(Hs, 3))
+   prediction₀ = getprediction₀(M, length(first(m.infer).b))
    M′ = addparent(M, T)
-   return decode(m, Hs, maxT, prediction₀, M′)
+   return _decode(m, Hs, maxT, prediction₀, M′)
 end
 
-@inline function decode(m::LAS{M}, Hs::DenseArray{<:Real,3}, maxT::Integer, prediction::M, M′::DataType) where M <: DenseMatrix
+@inline function _decode(m::LAS{M}, Hs::DenseArray{<:Real,3}, maxT::Integer, prediction::M, M′::DataType) where M <: DenseMatrix
    batch_size = size(Hs, 3)
-   # initialize state for every sequence in a batch
-   context  = repeat(m.state₀.context,  1, batch_size)
-   decoding = repeat(m.state₀.decoding, 1, batch_size)
    # precompute keys ψ(H) by gluing the slices of Hs along the batch dimension into a single D×TB matrix, then
    # passing it through the ψ dense layer in a single pass and then reshaping the result back into D′×T×B tensor
    ψHs = reshape(m.key_ψ(reshape(Hs, size(Hs,1), :)), size(m.key_ψ.W, 1), :, batch_size)
    # ψhs = m.key_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
-   Ŷs = Buffer(Hs, size(prediction, 1), batch_size, maxT) # D×B×T output tensor
+   # compute inital decoder state for the entire batch
+   decoding = m.spell(repeat([m.state₀.decoding; prediction; m.state₀.context]::M, 1, batch_size))::M
+   # allocate D×B×T output tensor
+   Ŷs = Buffer(Hs, size(prediction, 1), batch_size, maxT)
    @inbounds for t ∈ axes(Ŷs, 2)
-      # compute decoder state
-      decoding = m.spell([decoding; prediction; context]::M)::M
       # compute query ϕ(sᵢ)
       ϕsᵢ = m.query_ϕ(decoding)
       # compute energies via batch matrix multiplication
@@ -357,6 +355,8 @@ end
       # check: context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
       # predict probability distribution over character alphabet
       Ŷs[:,:,t] = prediction = m.infer([decoding; context]::M)
+      # compute decoder state
+      decoding = m.spell([decoding; prediction; context]::M)::M
    end
    return copy(Ŷs)
 end
