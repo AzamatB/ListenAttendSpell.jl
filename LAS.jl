@@ -8,7 +8,7 @@ CuArrays.allowscalar(false)
 using Flux
 using Flux: reset!, onecold, @functor, Recur, LSTMCell
 using Zygote
-using Zygote: Buffer, @adjoint
+using Zygote: Buffer, @adjoint, bufferfrom
 using LinearAlgebra
 using JLD2
 using IterTools
@@ -312,19 +312,10 @@ end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
-@inline function getprediction₀(::Type{Matrix{T}}, dim_out::Integer) where T <: Real
-   prediction₀ = [one(T);
-                  zeros(T, dim_out-1, 1)]
-   return prediction₀
-end
-@inline function getprediction₀(M::Type{CuMatrix{T,P}}, dim_out::Integer) where {T <: Real, P}
-   prediction₀ = [CuArrays.ones(T, 1, 1);
-                  CuArrays.zeros(T, dim_out-1, 1)]::M
-   return prediction₀
-end
-
 @inline function decode(m::LAS{M}, Hs::T, maxT::Integer) where {M <: DenseMatrix, T <: DenseArray{<:Real,3}}
-   prediction₀ = getprediction₀(M, length(first(m.infer).b))
+   prediction′₀ = bufferfrom(zeros(eltype(Hs), length(first(m.infer).b), 1))
+   prediction′₀[1] = 1.0f0
+   prediction₀ = M(copy(prediction′₀))
    M′ = addparent(M, T)
    return _decode(m, Hs, maxT, prediction₀, M′)
 end
