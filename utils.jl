@@ -83,7 +83,7 @@ end
 
 Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction `Ŷs`, which is assumed to be a tensor od dimensions D×B×T. Here D denotes the dimensionality of the output, B is the batch size and T is the maximum time length in the batch.
 """
-function batch_targets(ys::AbstractVector{V}, output_dim::Integer, maxT::Integer = maximum(length, ys))::V where V <: DenseVector{<:Integer}
+function batch_targets(ys::AbstractVector{V}, dim_out::Integer, maxT::Integer = maximum(length, ys))::V where V <: DenseVector{<:Integer}
    batch_size = length(ys)
    cartesian_indices = Vector{Vector{CartesianIndex{3}}}(undef, maxT)
    cartesian_indices_t = Vector{CartesianIndex{3}}(undef, batch_size)
@@ -98,8 +98,9 @@ function batch_targets(ys::AbstractVector{V}, output_dim::Integer, maxT::Integer
       cartesian_indices[time] = cartesian_indices_t[1:n]
    end
    cartesian_indices′ = reduce(vcat, cartesian_indices)
-   linear_indices = LinearIndices((output_dim, batch_size, maxT))[cartesian_indices′]
-   return linear_indices
+   linear_indices = LinearIndices((dim_out, batch_size, maxT))[cartesian_indices′]
+   @assert issorted(linear_indices)
+   return cartesian_indices′
 end
 
 """
@@ -134,23 +135,23 @@ function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
 
    maxTs = length.(@view Xs[lastidxs])
    X_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   linidxs_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   indices_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
 
-   batches = [(X |> gpu, linidxs, maxT) for (X, linidxs, maxT) ∈ zip(X_batches, linidxs_batches, maxTs)]
+   batches = [(X |> gpu, indices, maxT) for (X, indices, maxT) ∈ zip(X_batches, indices_batches, maxTs)]
    return batches
 end
 
 """
     mean_prob_of_correct_prediction(l::Real, total_length::Integer)::Real
-    mean_prob_of_correct_prediction(l::Real, linidxs::DenseVector{<:Integer})::Real
+    mean_prob_of_correct_prediction(l::Real, indices::DenseVector)::Real
     mean_prob_of_correct_prediction(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real
 
-Given a loss `l` for either a batch of length `total_length` or a batch with linear indices `linidxs` of correct labels or a collection of batches, `dataset`, returns mean probability of the correct prediction
+Given a loss `l` for either a batch of length `total_length` or a batch with linear indices `indices` of correct labels or a collection of batches, `dataset`, returns mean probability of the correct prediction
 """
 mean_prob_of_correct_prediction(l::Real, total_length::Integer)::Real = exp(-l / total_length)
-mean_prob_of_correct_prediction(l::Real, linidxs::DenseVector{<:Integer})::Real = exp(-l / length(linidxs))
+mean_prob_of_correct_prediction(l::Real, indices::DenseVector)::Real = exp(-l / length(indices))
 mean_prob_of_correct_prediction(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real =
-   exp(-l / sum(((_, linidxs, _),) -> length(linidxs), dataset))
+   exp(-l / sum(((_, indices, _),) -> length(indices), dataset))
 
 function printlog(io::IO, message...)
    println(io, message...)

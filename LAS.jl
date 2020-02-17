@@ -386,9 +386,9 @@ end
 # dim_LSTM_speller = 512
 # initialize with uniform(-0.1, 0.1)
 
-function loss(m::LAS, X::DenseArray{<:Real,3}, linidxs::DenseVector{<:Integer}, maxT::Integer)
+function loss(m::LAS, X::DenseArray{<:Real,3}, indices::DenseVector, maxT::Integer)
    Ŷs = m(X, maxT)
-   l = -sum(Ŷs[linidxs])
+   l = -sum(Ŷs[indices])
    return l
 end
 
@@ -458,9 +458,9 @@ optimiser = ADAM()          # 2 epochs
 filehandle = open("ListenAttendSpell/train_log.txt"; append=true)
 global_logger(TeeLogger(ConsoleLogger(), FileLogger(SimpleLogger(filehandle), true)))
 
-loss_val_saved = sum(data_val) do (X, linidxs, maxT)
+loss_val_saved = sum(data_val) do (X, indices, maxT)
     reset!(las)
-    loss(las, X, linidxs, maxT)
+    loss(las, X, indices, maxT)
 end
 @info "Validation loss before start of the training is $loss_val_saved"
 mean_prob = mean_prob_of_correct_prediction(loss_val_saved, total_length_val)
@@ -470,10 +470,10 @@ nds = ndigits(length(data_train))
 # main training loop
 for epoch ∈ 1:n_epochs
    @info "Starting to train epoch $epoch with an" optimiser
-   duration = @elapsed for (n, (X, linidxs, maxT)) ∈ enumerate(data_train)
+   duration = @elapsed for (n, (X, indices, maxT)) ∈ enumerate(data_train)
       reset!(las)
       l, pb = Flux.pullback(θ) do
-         loss(las, X, linidxs, maxT)
+         loss(las, X, indices, maxT)
       end
       printlog(filehandle, "Loss for a batch # ", ' '^(nds - ndigits(n)), n, " is ", l)
       θ̄ = pb(one(l))
@@ -481,9 +481,9 @@ for epoch ∈ 1:n_epochs
    end
    duration = round(duration / 60; sigdigits = 2)
    @info "Completed training epoch $epoch in $duration minutes"
-   loss_val = sum(data_val) do (X, linidxs, maxT)
+   loss_val = sum(data_val) do (X, indices, maxT)
        reset!(las)
-       loss(las, X, linidxs, maxT)
+       loss(las, X, indices, maxT)
    end
    @info "Validation loss after training epoch $epoch is $loss_val"
    mean_prob = mean_prob_of_correct_prediction(loss_val, total_length_val)
