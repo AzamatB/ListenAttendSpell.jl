@@ -79,11 +79,11 @@ function batch_inputs!(Xs::AbstractVector{<:AbstractVector{<:DenseVector}}, mult
 end
 
 """
-    batch_targets(ys::AbstractVector{V}, output_dim::Integer, maxT::Integer = maximum(length, ys))::V where V <: DenseVector{<:Integer}
+    batch_targets(ys::AbstractVector{<:DenseVector{<:Integer}}, dim_out::Integer, maxT::Integer = maximum(length, ys))
 
 Given a batch vector of target sequences `ys` returns a vector of corresponding linear indexes into the prediction `Ŷs`, which is assumed to be a tensor od dimensions D×B×T. Here D denotes the dimensionality of the output, B is the batch size and T is the maximum time length in the batch.
 """
-function batch_targets(ys::AbstractVector{V}, dim_out::Integer, maxT::Integer = maximum(length, ys))::V where V <: DenseVector{<:Integer}
+function batch_targets(ys::AbstractVector{<:DenseVector{<:Integer}}, dim_out::Integer, maxT::Integer = maximum(length, ys))
    batch_size = length(ys)
    cartesian_indices = Vector{Vector{CartesianIndex{3}}}(undef, maxT)
    cartesian_indices_t = Vector{CartesianIndex{3}}(undef, batch_size)
@@ -110,10 +110,10 @@ Arranges dataset into batches such that the number of batches approximately equa
 Batches are formed by first sorting sequences in the dataset according to their length (which minimizes the total number of elements to pad in inputs) and then partitioning the result into batches such that each batch approximately the same total number of sequence elements (this ensures that each batch takes up the same amount of memory, so as to avoid memory overflow when loading data into the GPU).
 """
 function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
-               ys::DenseVector{<:DenseVector},
-               output_dim::Integer,
-               batch_size::Integer,
-               multiplicity::Integer)
+                       ys::DenseVector{<:DenseVector},
+                       dim_out::Integer,
+                       batch_size::Integer,
+                       multiplicity::Integer)
 
    sortidxs = sortperm(Xs; by=length)
    Xs, ys = Xs[sortidxs], ys[sortidxs]
@@ -135,7 +135,7 @@ function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
 
    maxTs = length.(@view Xs[lastidxs])
    X_batches = [ batch_inputs!(Xs[firstidx:lastidx], multiplicity, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
-   indices_batches = [ batch_targets(ys[firstidx:lastidx], output_dim, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
+   indices_batches = [ batch_targets(ys[firstidx:lastidx], dim_out, maxT) for (firstidx, lastidx, maxT) ∈ zip(firstidxs, lastidxs, maxTs) ]
 
    batches = [(X |> gpu, indices, maxT) for (X, indices, maxT) ∈ zip(X_batches, indices_batches, maxTs)]
    return batches
