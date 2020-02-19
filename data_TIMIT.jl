@@ -122,11 +122,11 @@ function build_dataset(dir_data::AbstractString, path_out::AbstractString; Δord
 end
 
 
-const DIR_DATA_TEST  = "data/TIMIT/TIMIT_wav/TEST"
-const PATH_OUT_TEST  = "data/TIMIT/TIMIT_MFCC/data_test.jld2"
+const DIR_DATA_TST  = "data/TIMIT/TIMIT_wav/TEST"
+const PATH_OUT_TST  = "data/TIMIT/TIMIT_MFCC/data_test.jld2"
 
-const DIR_DATA_TRAIN = "data/TIMIT/TIMIT_wav/TRAIN"
-const PATH_OUT_TRAIN = "data/TIMIT/TIMIT_MFCC/data_train.jld2"
+const DIR_DATA_TRN = "data/TIMIT/TIMIT_wav/TRAIN"
+const PATH_OUT_TRN = "data/TIMIT/TIMIT_MFCC/data_train.jld2"
 
-@time build_dataset(DIR_DATA_TEST, PATH_OUT_TEST)
-@time build_dataset(DIR_DATA_TRAIN, PATH_OUT_TRAIN)
+@time build_dataset(DIR_DATA_TST, PATH_OUT_TST)
+@time build_dataset(DIR_DATA_TRN, PATH_OUT_TRN)

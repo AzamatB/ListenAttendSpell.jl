@@ -142,19 +142,45 @@ function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
 end
 
 """
-    mean_prob_of_correct_prediction(l::Real, total_length::Integer)::Real
-    mean_prob_of_correct_prediction(l::Real, indices::DenseVector)::Real
-    mean_prob_of_correct_prediction(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real
+    accuracy(l::Real, total_length::Integer)::Real
+    accuracy(l::Real, indices::DenseVector)::Real
+    accuracy(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real
 
 Given a loss `l` for either a batch of length `total_length` or a batch with linear indices `indices` of correct labels or a collection of batches, `dataset`, returns mean probability of the correct prediction
 """
-mean_prob_of_correct_prediction(l::Real, total_length::Integer)::Real = exp(-l / total_length)
-mean_prob_of_correct_prediction(l::Real, indices::DenseVector)::Real = exp(-l / length(indices))
-mean_prob_of_correct_prediction(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real =
+accuracy(l::Real, total_length::Integer)::Real = exp(-l / total_length)
+accuracy(l::Real, indices::DenseVector)::Real = exp(-l / length(indices))
+accuracy(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real =
    exp(-l / sum(((_, indices, _),) -> length(indices), dataset))
 
 function printlog(io::IO, message...)
    println(io, message...)
    flush(io)
    println(message...)
+end
+
+function fill_param_dict!(dict::AbstractDict, rm::Recur, name::AbstractString="")
+   verbose = string(rm)
+   short = replace(verbose, r"^Recur\(|Cell|\)$" =>"")
+   name = replace(name, verbose => short)
+   fill_param_dict!(dict, rm.cell, name)
+end
+function fill_param_dict!(dict::AbstractDict, x::AbstractArray{<:Number}, name::AbstractString)
+   dict[name] = vec(x)
+   return nothing
+end
+function fill_param_dict!(dict::AbstractDict, model::Chain, name::AbstractString)
+   for (i, layer) ∈ enumerate(model.layers)
+      fill_param_dict!(dict, layer, name * "/layer_$i:$layer")
+   end
+end
+function fill_param_dict!(dict::AbstractDict, x, name::AbstractString)
+   for (field, child) in pairs(Flux.trainable(x))
+      fill_param_dict!(dict, child, name * "/$field")
+   end
+end
+function param_dict(model, prefix::AbstractString="")
+   dict = Dict{String,Any}()
+   fill_param_dict!(dict, model, prefix)
+   return sort(dict)
 end
