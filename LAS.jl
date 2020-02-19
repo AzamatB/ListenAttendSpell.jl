@@ -387,6 +387,7 @@ end
 # initialize with uniform(-0.1, 0.1)
 
 function loss(m::LAS, X::DenseArray{<:Real,3}, indices::DenseVector, maxT::Integer)
+   reset!(m)
    Ŷs = m(X, maxT)
    l = -sum(Ŷs[indices])
    return l
@@ -394,7 +395,6 @@ end
 
 function loss(m::LAS, dataset::AbstractVector{<:Tuple{DenseArray{<:Real,3}, DenseVector, Integer}})
    return sum(dataset) do (X, indices, maxT)
-      reset!(m)
       loss(m, X, indices, maxT)
    end
 end
@@ -426,11 +426,11 @@ let batch_size = 77, valsetsize = 344
       JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
    else
       encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 3),
-         pblstms_out = (5, 7, 11)
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 17),
+         pblstms_out = (7, 5, 3)
       )
-      attention_dim = 13
-      decoder_out_dim = 17
+      attention_dim = 11
+      decoder_out_dim = 13
       # encoder_dims = (
       #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
       #    pblstms_out = (128, 128, 128)
@@ -488,7 +488,6 @@ for epoch ∈ 1:n_epochs
    callback()
    @info "Epoch $epoch:"
    duration = @elapsed for (n, (X, indices, maxT)) ∈ enumerate(data_trn)
-      reset!(las)
       l, pb = Flux.pullback(θ) do
          loss(las, X, indices, maxT)
       end
