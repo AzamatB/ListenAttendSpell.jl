@@ -425,18 +425,18 @@ let batch_size = 77, valsetsize = 344
    if saved_results
       JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
    else
-      encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 17),
-         pblstms_out = (7, 5, 3)
-      )
-      attention_dim = 11
-      decoder_out_dim = 13
       # encoder_dims = (
-      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
-      #    pblstms_out = (128, 128, 128)
+      #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 17),
+      #    pblstms_out = (7, 5, 3)
       # )
-      # attention_dim   = 128
-      # decoder_out_dim = 128
+      # attention_dim = 11
+      # decoder_out_dim = 13
+      encoder_dims = (
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 128),
+         pblstms_out = (128, 128, 128)
+      )
+      attention_dim   = 128
+      decoder_out_dim = 128
       las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
    end
 
@@ -454,6 +454,7 @@ let batch_size = 77, valsetsize = 344
    data_val, length_val
 end
 
+# initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
 loss_val_saved = loss(las, data_val)
 
