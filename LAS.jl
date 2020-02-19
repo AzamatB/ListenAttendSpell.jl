@@ -331,7 +331,7 @@ end
    decoding = m.spell(repeat([m.state₀.decoding; prediction; m.state₀.context]::M, 1, batch_size))::M
    # allocate D×B×T output tensor
    Ŷs = Buffer(Hs, size(prediction, 1), batch_size, maxT)
-   @inbounds for t ∈ axes(Ŷs, 2)
+   @inbounds for t ∈ axes(Ŷs, 3)
       # compute query ϕ(sᵢ)
       ϕsᵢ = m.query_ϕ(decoding)
       # compute energies via batch matrix multiplication
@@ -418,7 +418,7 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
 las, phonemes,
 data_trn, length_trn,
 data_val, length_val =
-let batch_size = 77, valsetsize = 344
+let batch_size = 132, valsetsize = 344
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
    out_dim = length(PHONEMES)
 
@@ -483,9 +483,9 @@ end
 optimiser = ADAM()
 
 nds = ndigits(length(data_trn))
+callback()
 # main training loop
 for epoch ∈ 1:n_epochs
-   callback()
    @info "Epoch $epoch:"
    duration = @elapsed for (n, (X, indices, maxT)) ∈ enumerate(data_trn)
       l, pb = Flux.pullback(θ) do
@@ -497,6 +497,7 @@ for epoch ∈ 1:n_epochs
       Flux.Optimise.update!(optimiser, θ, θ̄)
    end
    println("\nCompleted in ", round(duration/60; sigdigits=2), " minutes")
+   callback()
 end
 end
 
