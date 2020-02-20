@@ -420,7 +420,7 @@ function main(; n_epochs::Integer=1, saved_results::Bool=false)
 las, phonemes, data_trn,
 data_evl, length_evl,
 data_val, length_val =
-let batch_size = 33, valsetsize = 330
+let batch_size = 88, valsetsize = 352
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
    out_dim = length(PHONEMES)
 
@@ -462,7 +462,8 @@ end
 
 # initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
-loss_val_saved = loss(las, data_val)
+loss_val_prev = loss_val_saved = loss(las, data_val)
+optimiser = Nesterov(0.1)
 
 function callback()
    loss_evl = loss(las, data_evl)
@@ -478,6 +479,12 @@ function callback()
       @info "Saved results!"
       println()
    end
+   # if the validation error increased from previous epoch
+   if loss_val > loss_val_prev
+      # half the learning rate
+      optimiser.eta = max(0.5optimiser.eta, 1e-6)
+   end
+   loss_val_prev = loss_val
    params_dict = param_dict(las, "las")
    with_logger(tblogger) do
       @info "model" params=params_dict log_step_increment=0
@@ -487,7 +494,6 @@ function callback()
 end
 
 θ = Flux.params(las)
-optimiser = ADAM()
 
 nds = ndigits(length(data_trn))
 callback()
