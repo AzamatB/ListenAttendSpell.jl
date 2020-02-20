@@ -15,6 +15,7 @@ using Base.Iterators: reverse
 using OMEinsum
 using Logging
 using TensorBoardLogger
+using StatsBase
 
 CuArrays.allowscalar(false)
 
@@ -416,15 +417,15 @@ end
 
 function main(; n_epochs::Integer=1, saved_results::Bool=false)
 # load data & construct the neural net
-las, phonemes,
-data_trn, length_trn,
+las, phonemes, data_trn,
+data_evl, length_evl,
 data_val, length_val =
-let batch_size = 33, valsetsize = 344
+let batch_size = 33, valsetsize = 330
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
    out_dim = length(PHONEMES)
 
    if saved_results
-      JLD2.@load "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
+      JLD2.@load "ListenAttendSpell.jl/models/TIMIT/las.jld2" las loss_val_saved
    else
       # encoder_dims = (
       #    blstm       = (in = (length ∘ first ∘ first)(Xs), out = 17),
@@ -443,15 +444,19 @@ let batch_size = 33, valsetsize = 344
 
    multiplicity = time_squashing_factor(las)
    data_trn = batch_dataset(Xs, ys, out_dim, batch_size, multiplicity)
-   length_trn = sum(length, ys)
+
+   idxs_evl = sample(eachindex(ys), valsetsize; replace=false)
+   ys_evl = ys[idxs_evl]
+   data_evl = batch_dataset(Xs[idxs_evl], ys_evl, out_dim, batch_size, multiplicity)
+   length_evl = sum(length, ys_evl)
 
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
    ys_val = ys[1:valsetsize]
    data_val = batch_dataset(Xs[1:valsetsize], ys_val, out_dim, batch_size, multiplicity)
    length_val = sum(length, ys_val)
 
-   las, PHONEMES,
-   data_trn, length_trn,
+   las, PHONEMES, data_trn,
+   data_evl, length_evl,
    data_val, length_val
 end
 
@@ -460,23 +465,23 @@ tblogger = TBLogger("log", tb_overwrite)
 loss_val_saved = loss(las, data_val)
 
 function callback()
-   loss_trn = loss(las, data_trn)
+   loss_evl = loss(las, data_evl)
    loss_val = loss(las, data_val)
-   acc_trn  = accuracy(loss_trn, length_trn)
+   acc_evl  = accuracy(loss_evl, length_evl)
    acc_val  = accuracy(loss_val, length_val)
    println()
-   @show loss_trn loss_val acc_trn acc_val
+   @show loss_evl loss_val acc_evl acc_val
    println()
    if loss_val < loss_val_saved
       loss_val_saved = loss_val
-      save("ListenAttendSpell/models/TIMIT/las.jld2", Dict("las" => cpu(las), "loss_val_saved" => loss_val_saved))
+      save("ListenAttendSpell.jl/models/TIMIT/las.jld2", Dict("las" => cpu(las), "loss_val_saved" => loss_val_saved))
       @info "Saved results!"
       println()
    end
    params_dict = param_dict(las, "las")
    with_logger(tblogger) do
       @info "model" params=params_dict log_step_increment=0
-      @info "train" loss=loss_trn acc=acc_trn log_step_increment=0
+      @info "train" loss=loss_evl acc=acc_evl log_step_increment=0
       @info "valid" loss=loss_val acc=acc_val
    end
 end
