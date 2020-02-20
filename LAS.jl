@@ -467,10 +467,10 @@ loss_val_saved = loss(las, data_val)
 function callback()
    loss_evl = loss(las, data_evl)
    loss_val = loss(las, data_val)
-   acc_evl  = accuracy(loss_evl, length_evl)
-   acc_val  = accuracy(loss_val, length_val)
+   truthprob_evl  = truthprob(loss_evl, length_evl)
+   truthprob_val  = truthprob(loss_val, length_val)
    println()
-   @show loss_evl loss_val acc_evl acc_val
+   @show loss_evl loss_val truthprob_evl truthprob_val
    println()
    if loss_val < loss_val_saved
       loss_val_saved = loss_val
@@ -481,8 +481,8 @@ function callback()
    params_dict = param_dict(las, "las")
    with_logger(tblogger) do
       @info "model" params=params_dict log_step_increment=0
-      @info "train" loss=loss_evl acc=acc_evl log_step_increment=0
-      @info "valid" loss=loss_val acc=acc_val
+      @info "train" loss=loss_evl truthprob=truthprob_evl log_step_increment=0
+      @info "valid" loss=loss_val truthprob=truthprob_val
    end
 end
 

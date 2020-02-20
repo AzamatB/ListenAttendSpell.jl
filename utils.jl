@@ -142,15 +142,15 @@ function batch_dataset(Xs::DenseVector{<:DenseVector{<:DenseVector}},
 end
 
 """
-    accuracy(l::Real, total_length::Integer)::Real
-    accuracy(l::Real, indices::DenseVector)::Real
-    accuracy(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real
+    truthprob(l::Real, total_length::Integer)::Real
+    truthprob(l::Real, indices::DenseVector)::Real
+    truthprob(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real
 
 Given a loss `l` for either a batch of length `total_length` or a batch with linear indices `indices` of correct labels or a collection of batches, `dataset`, returns mean probability of the correct prediction
 """
-accuracy(l::Real, total_length::Integer)::Real = exp(-l / total_length)
-accuracy(l::Real, indices::DenseVector)::Real = exp(-l / length(indices))
-accuracy(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real =
+truthprob(l::Real, total_length::Integer)::Real = exp(-l / total_length)
+truthprob(l::Real, indices::DenseVector)::Real = exp(-l / length(indices))
+truthprob(l::Real, dataset::Vector{<:Tuple{DenseArray{<:Real,3}, DenseVector{<:Integer}, Integer}})::Real =
    exp(-l / sum(((_, indices, _),) -> length(indices), dataset))
 
 function printlog(io::IO, message...)
