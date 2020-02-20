@@ -285,7 +285,7 @@ function LAS(encoder_dims::NamedTuple,
    spell   = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
    infer   = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
 
-   LAS(state₀, listen, key_ψ, query_ϕ, spell, infer) |> gpu
+   LAS(state₀, listen, key_ψ, query_ϕ, spell, infer)
 end
 
 function LAS(encoder_dims::NamedTuple,
@@ -455,7 +455,7 @@ let batch_size = 33, valsetsize = 330
    data_val = batch_dataset(Xs[1:valsetsize], ys_val, out_dim, batch_size, multiplicity)
    length_val = sum(length, ys_val)
 
-   las, PHONEMES, data_trn,
+   las |> gpu, PHONEMES, data_trn,
    data_evl, length_evl,
    data_val, length_val
 end
