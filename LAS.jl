@@ -9,6 +9,7 @@ using Zygote
 using Zygote: Buffer, @adjoint
 using LinearAlgebra
 using JLD2
+using FileIO
 using IterTools
 using Base.Iterators: reverse
 using OMEinsum
@@ -468,7 +469,7 @@ function callback()
    println()
    if loss_val < loss_val_saved
       loss_val_saved = loss_val
-      JLD2.@save "ListenAttendSpell/models/TIMIT/las.jld2" las loss_val_saved
+      save("ListenAttendSpell/models/TIMIT/las.jld2", Dict("las" => cpu(las), "loss_val_saved" => loss_val_saved))
       @info "Saved results!"
       println()
    end
