@@ -463,7 +463,7 @@ end
 # initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
 loss_val_prev = loss_val_saved = loss(las, data_val)
-optimiser = Nesterov(0.1)
+optimiser = Nesterov(0.01)
 
 function callback()
    loss_evl = loss(las, data_evl)
@@ -482,7 +482,9 @@ function callback()
    # if the validation error increased from previous epoch
    if loss_val > loss_val_prev
       # half the learning rate
-      optimiser.eta = max(0.5optimiser.eta, 1e-6)
+      η = max(0.5optimiser.eta, 1e-6)
+      optimiser.eta = η
+      @info "Adjusted learning rate to:" η
    end
    loss_val_prev = loss_val
    params_dict = param_dict(las, "las")
