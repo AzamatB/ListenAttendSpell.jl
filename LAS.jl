@@ -434,7 +434,7 @@ let batch_size = 88, valsetsize = 352
       # attention_dim = 11
       # decoder_out_dim = 13
       encoder_dims = (
-         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 230),
+         blstm       = (in = (length ∘ first ∘ first)(Xs), out = 256),
          pblstms_out = (230, 230, 230)
       )
       attention_dim   = 230
