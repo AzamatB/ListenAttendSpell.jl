@@ -463,7 +463,7 @@ end
 # initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
 loss_val_prev = loss_val_saved = loss(las, data_val)
-optimiser = Nesterov(0.01)
+optimiser = ADAM(0.002)
 
 function callback()
    loss_evl = loss(las, data_evl)
@@ -479,11 +479,24 @@ function callback()
       @info "Saved results!"
       println()
    end
-   # if the validation error increased from previous epoch
+
+   halve_η = false
    if loss_val > loss_val_prev
-      # half the learning rate
-      η = max(0.5optimiser.eta, 1e-6)
+      # if the validation error increased from previous epoch
+      # then halve the learning rate
+      halve_η = true
+   else # ask user if he still wants to halve the learning rate
+      println("Do you want to halve the current learning rate of η = $(optimiser.eta)? [yes/\e[4mno\e[0m]")
+      ans = "\n"
+      @async ans = readline(stdin)
+      timedwait(() -> ans != "\n", 10.0; pollint=0.5)
+      (lowercase(ans) ∈ ("yes", "y")) && (halve_η = true)
+   end
+   if halve_η
+      # halve the learning rate
+      η = max(0.5optimiser.eta, 1e-7)
       optimiser.eta = η
+      println()
       @info "Adjusted learning rate to:" η
    end
    loss_val_prev = loss_val
@@ -501,6 +514,7 @@ nds = ndigits(length(data_trn))
 callback()
 # main training loop
 for epoch ∈ 1:n_epochs
+   println()
    @info "Epoch $epoch:"
    duration = @elapsed for (n, (X, indices, maxT)) ∈ enumerate(data_trn)
       l, pb = Flux.pullback(θ) do
