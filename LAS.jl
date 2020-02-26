@@ -415,7 +415,7 @@ function predict(m::LAS, xs::DenseVector{<:DenseVector{<:Real}}, labels)::DenseV
    return prediction
 end
 
-function main(; n_epochs::Integer=1, saved_results::Bool=false)
+function main(; n_epochs::Integer=1, saved_results::Bool=false, log_weights::Bool=true)
 # load data & construct the neural net
 las, phonemes, data_trn,
 data_evl, length_evl,
@@ -463,7 +463,16 @@ end
 # initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
 loss_val_prev = loss_val_saved = loss(las, data_val)
-optimiser = ADAM(0.002)
+optimiser = ADAM()
+
+if log_weights
+   logweights = () -> begin
+      params_dict = param_dict(las, "las")
+      @info "model" params = params_dict
+   end
+else
+   logweights = () -> nothing
+end
 
 function callback()
    loss_evl = loss(las, data_evl)
@@ -488,24 +497,24 @@ function callback()
    else # ask user if he still wants to halve the learning rate
       println("Do you want to halve the current learning rate of η = $(optimiser.eta)? [yes/\e[4mno\e[0m]")
       ans = "\n"
-      @async ans = readline(stdin)
+      @async(ans = readline(stdin))
       timedwait(() -> ans != "\n", 10.0; pollint=0.5)
       (lowercase(ans) ∈ ("yes", "y")) && (halve_η = true)
    end
    if halve_η
       # halve the learning rate
-      η = max(0.5optimiser.eta, 1e-7)
+      η = max(optimiser.eta/2, 1e-5)
       optimiser.eta = η
       println()
       @info "Adjusted learning rate to:" η
    end
-   loss_val_prev = loss_val
-   params_dict = param_dict(las, "las")
+
    with_logger(tblogger) do
-      @info "model" params=params_dict log_step_increment=0
       @info "train" loss=loss_evl truthprob=truthprob_evl log_step_increment=0
-      @info "valid" loss=loss_val truthprob=truthprob_val
+      @info "valid" loss=loss_val truthprob=truthprob_val log_step_increment=0
+      logweights()
    end
+   loss_val_prev = loss_val
 end
 
 θ = Flux.params(las)
