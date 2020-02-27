@@ -463,7 +463,7 @@ end
 # initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
 loss_val_prev = loss_val_saved = loss(las, data_val)
-optimiser = ADAM()
+optimiser = RMSProp(0.0001)
 
 if log_weights
    logweights = () -> begin
