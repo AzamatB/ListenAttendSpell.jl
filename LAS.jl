@@ -468,7 +468,7 @@ optimiser = ADAM()
 if log_weights
    logweights = () -> begin
       params_dict = param_dict(las, "las")
-      @info "model" params = params_dict
+      @info "model" params = params_dict log_step_increment=0
    end
 else
    logweights = () -> nothing
@@ -497,8 +497,10 @@ function callback()
    else # ask user if he still wants to halve the learning rate
       println("Do you want to halve the current learning rate of η = $(optimiser.eta)? [yes/\e[4mno\e[0m]")
       ans = "\n"
-      @async(ans = readline(stdin))
-      timedwait(() -> ans != "\n", 10.0; pollint=0.5)
+      @sync begin
+         @async(ans = readline(stdin))
+         timedwait(() -> ans != "\n", 10.0; pollint=0.5)
+      end
       (lowercase(ans) ∈ ("yes", "y")) && (halve_η = true)
    end
    if halve_η
@@ -510,9 +512,9 @@ function callback()
    end
 
    with_logger(tblogger) do
-      @info "train" loss=loss_evl truthprob=truthprob_evl log_step_increment=0
-      @info "valid" loss=loss_val truthprob=truthprob_val log_step_increment=0
       logweights()
+      @info "train" loss=loss_evl truthprob=truthprob_evl log_step_increment=0
+      @info "valid" loss=loss_val truthprob=truthprob_val
    end
    loss_val_prev = loss_val
 end
