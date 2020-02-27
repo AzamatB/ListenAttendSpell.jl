@@ -497,10 +497,8 @@ function callback()
    else # ask user if he still wants to halve the learning rate
       println("Do you want to halve the current learning rate of η = $(optimiser.eta)? [yes/\e[4mno\e[0m]")
       ans = "\n"
-      @sync begin
-         @async(ans = readline(stdin))
-         timedwait(() -> ans != "\n", 10.0; pollint=0.5)
-      end
+      @async(ans = readline(stdin))
+      timedwait(() -> ans != "\n", 10.0; pollint=0.5)
       (lowercase(ans) ∈ ("yes", "y")) && (halve_η = true)
    end
    if halve_η
