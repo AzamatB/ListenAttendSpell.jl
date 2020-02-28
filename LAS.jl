@@ -143,7 +143,7 @@ Input must be a vector of length T (time duration), whose each element is a matr
 function (m::PBLSTM)(xs::VM) where VM <: AbstractVector{<:DenseVecOrMat}
    # reduce time duration by half by restacking consecutive pairs of input along the time dimension
    evenidxs = (firstindex(xs)+1):2:lastindex(xs)
-   x̄s = (i -> [xs[i-1]; xs[i]]).(evenidxs)
+   x̄s = (i -> [xs[i-1]; xs[i]]).(evenidxs)::VM
    # counterintuitively the gradient of the following version is not much faster (on par in fact),
    # even though it is implemented via broadcasting
    # x̄s = vcat.(getindex.(Ref(xs), 1:2:lastindex(xs)), getindex.(Ref(xs), 2:2:lastindex(xs)))
@@ -377,8 +377,7 @@ end
 function (m::LAS)(x::AbstractVector{<:DenseVector})
    T = length(x)
    X = reshape(reduce(hcat, pad(x, time_squashing_factor(m))), Val(3))
-   Ŷ = dropdims.(m(X, T); dims=2)
-   return Ŷ
+   return m(X, T)
 end
 
 # dim_encoding  = (512, 512, 512, 512)
