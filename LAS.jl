@@ -463,7 +463,7 @@ end
 # initialize TensorBoard logger
 tblogger = TBLogger("log", tb_overwrite)
 loss_val_prev = loss_val_saved = loss(las, data_val)
-optimiser = ADAM(0.00005)
+optimiser = ADAM(0.0001)
 
 if log_weights
    logweights = () -> begin
@@ -489,25 +489,25 @@ function callback()
       println()
    end
 
-   halve_η = false
-   if loss_val > loss_val_prev
-      # if the validation error increased from previous epoch
-      # then halve the learning rate
-      halve_η = true
-   else # ask user if he still wants to halve the learning rate
-      println("Do you want to halve the current learning rate of η = $(optimiser.eta)? [yes/\e[4mno\e[0m]")
-      ans = "\n"
-      @async(ans = readline(stdin))
-      timedwait(() -> ans != "\n", 10.0; pollint=0.5)
-      (lowercase(ans) ∈ ("yes", "y")) && (halve_η = true)
-   end
-   if halve_η
-      # halve the learning rate
-      η = max(optimiser.eta/2, 1e-5)
-      optimiser.eta = η
-      println()
-      @info "Adjusted learning rate to:" η
-   end
+   # halve_η = false
+   # if loss_val > loss_val_prev
+   #    # if the validation error increased from previous epoch
+   #    # then halve the learning rate
+   #    halve_η = true
+   # else # ask user if he still wants to halve the learning rate
+   #    println("Do you want to halve the current learning rate of η = $(optimiser.eta)? [yes/\e[4mno\e[0m]")
+   #    ans = "\n"
+   #    @async(ans = readline(stdin))
+   #    timedwait(() -> ans != "\n", 10.0; pollint=0.5)
+   #    (lowercase(ans) ∈ ("yes", "y")) && (halve_η = true)
+   # end
+   # if halve_η
+   #    # halve the learning rate
+   #    η = max(optimiser.eta/2, 1e-5)
+   #    optimiser.eta = η
+   #    println()
+   #    @info "Adjusted learning rate to:" η
+   # end
 
    with_logger(tblogger) do
       logweights()
