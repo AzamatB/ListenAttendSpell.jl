@@ -17,16 +17,6 @@ end
    return reduce(vcat, As), Δ -> (nothing, map((sz, A) -> Zygote.pull_block_vert(sz, Δ, A), cumsizes, As))
 end
 
-@adjoint repeat(x::AbstractVector, m::Integer) =
-   repeat(x, m), ȳ -> (dropdims(sum(reshape(ȳ, length(x), :); dims=2); dims=2), nothing)
-
-@adjoint function repeat(x::AbstractVecOrMat, m::Integer, n::Integer=1)
-   return repeat(x, m, n), function (ȳ)
-      ȳ′ = reshape(ȳ, size(x,1), m, size(x,2), n)
-      return reshape(sum(ȳ′; dims=(2,4)), size(x)), nothing, nothing
-   end
-end
-
 """
     tensor2vecofmats(Xs::DenseArray{<:Real,3}) -> Vector{<:DenseVecOrMat}
 
