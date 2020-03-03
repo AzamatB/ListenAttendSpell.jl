@@ -299,14 +299,16 @@ end
 
 function Base.show(io::IO, m::LAS)
    print(io,
-      "LAS(\n    ",
-           m.state₀, ",\n    ",
-           m.listen, ",\n    ",
-           m.key_ψ, ",\n    ",
-           m.query_ϕ, ",\n    ",
-           m.spell, ",\n    ",
-           m.infer,
-      "\n)"
+      """
+      LAS(
+         $(m.state₀),
+         $(m.listen),
+         $(m.key_ψ),
+         $(m.query_ϕ),
+         $(m.spell),
+         $(m.infer)
+      )
+      """
    )
 end
 
