@@ -244,7 +244,7 @@ end
 
 CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoftmax)
 """
-    State₀{V <: DenseVector}
+    State₀{M <: DenseMatrix}
 
 Initial state variables
 """
