@@ -243,65 +243,56 @@ function Decoder(in::Integer, out::Union{Integer, NTuple{N,Integer} where N})
 end
 
 CharacterDistribution(in::Integer, out::Integer) = Chain(Dense(in, out), logsoftmax)
-"""
-    State₀{M <: DenseMatrix}
 
-Initial state variables
-"""
-mutable struct State₀{M <: DenseMatrix}
-   context  :: M
-   decoding :: M
-end
-
-@functor State₀
-
-State₀(dim_c::Integer, dim_d::Integer) = State₀(zeros(Float32, dim_c, 1), zeros(Float32, dim_d, 1))
-
-Base.show(io::IO, s₀::State₀) = print(io, "State₀(", size(s₀.context, 1), ", ", size(s₀.decoding, 1), ")")
-
-struct LAS{M, E, Aϕ, Aψ, D, C}
-   state₀  :: State₀{M} # trainable initial state of the model
-   listen  :: E         # encoder function
-   key_ψ   :: Aψ        # keys attention context function
-   query_ϕ :: Aϕ        # query attention context function
-   spell   :: D         # LSTM decoder
-   infer   :: C         # character distribution inference function
+struct LAS{M <: DenseMatrix, E, Aϕ, Aψ, D, C}
+   context₀  :: M  # trainable initial value of the context
+   decoding₀ :: M  # trainable initial value of the decoding
+   listen    :: E  # encoder function
+   key_ψ     :: Aψ # keys attention context function
+   query_ϕ   :: Aϕ # query attention context function
+   spell     :: D  # LSTM decoder
+   infer     :: C  # character distribution inference function
 end
 
 @functor LAS
 
 function LAS(encoder_dims::NamedTuple,
              attention_dim::Integer,
-             decoder_out_dims::Tuple{Integer,Integer},
-             out_dim::Integer)
+             decoder_dims::Tuple{Integer,Integer},
+             output_dim::Integer)
 
-   dim_encoding = 2last(encoder_dims.pblstms_out)
-   dim_decoding =  last(decoder_out_dims)
-
-   state₀  = State₀(dim_encoding, dim_decoding)
+   encoding_dim = 2last(encoder_dims.pblstms_out)
+   decoding_dim =  last(decoder_dims)
+   context₀  = zeros(Float32, encoding_dim, 1)
+   decoding₀ = zeros(Float32, decoding_dim, 1)
    listen  = Encoder(encoder_dims)
-   key_ψ   = MLP(dim_encoding, attention_dim)
-   query_ϕ = MLP(dim_decoding, attention_dim)
-   spell   = Decoder(dim_encoding + dim_decoding + out_dim, decoder_out_dims)
-   infer   = CharacterDistribution(dim_encoding + dim_decoding, out_dim)
+   key_ψ   = MLP(encoding_dim, attention_dim)
+   query_ϕ = MLP(decoding_dim, attention_dim)
+   spell   = Decoder(encoding_dim + decoding_dim + output_dim, decoder_dims)
+   infer   = CharacterDistribution(encoding_dim + decoding_dim, output_dim)
 
-   LAS(state₀, listen, key_ψ, query_ϕ, spell, infer)
+   LAS(context₀, decoding₀, listen, key_ψ, query_ϕ, spell, infer) |> gpu
 end
 
 function LAS(encoder_dims::NamedTuple,
              attention_dim::Integer,
              decoder_out_dim::Integer,
-             out_dim::Integer)
+             output_dim::Integer)
    decoder_out_dim₁ = last(encoder_dims.pblstms_out) + decoder_out_dim + out_dim÷2
-   decoder_out_dims = (decoder_out_dim₁, decoder_out_dim)
-   LAS(encoder_dims, attention_dim, decoder_out_dims, out_dim)
+   decoder_dims = (decoder_out_dim₁, decoder_out_dim)
+   LAS(encoder_dims, attention_dim, decoder_dims, output_dim)
 end
 
 function Base.show(io::IO, m::LAS)
+   input_dim     = size(first(m.listen).forward.cell.Wi, 2)
+   encoding_dim  = size(m.context₀, 1)
+   attention_dim = length(m.key_ψ.b)
+   decoding_dim  = size(m.decoding₀, 1)
+   output_dim    = length(first(m.infer).b)
    print(io,
       """
       LAS(
-         $(m.state₀),
+         # (input_dim=$input_dim, encoding_dim=$encoding_dim, attention_dim=$attention_dim, decoding_dim=$decoding_dim, output_dim=$output_dim)
          $(m.listen),
          $(m.key_ψ),
          $(m.query_ϕ),
@@ -315,6 +306,9 @@ end
 # Flux.reset!(m::LAS) = reset!((m.listen, m.spell)) # not needed as taken care of by @functor
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
+
+# 1. include actual one-hot prediction instead of current just output of the network
+# 2. add teacher forcing
 
 @inline function decode(m::LAS{M}, Hs::T, maxT::Integer) where {M <: DenseMatrix, T <: DenseArray{<:Real,3}}
    prediction′₀ = Zygote.bufferfrom(zeros(eltype(Hs), length(first(m.infer).b), 1))
@@ -332,7 +326,7 @@ end
    # ψhs = m.key_ψ.(getindex.(Ref(Hs), :, axes(Hs,2), :))
    # check: all(ψhs .≈ eachslice(ψHs; dims=2))
    # compute inital decoder state for the entire batch
-   decoding = m.spell(repeat([m.state₀.decoding; prediction; m.state₀.context]::M, 1, batch_size))::M
+   decoding = m.spell(repeat([m.decoding₀; prediction; m.context₀]::M, 1, batch_size))::M
    # allocate D×B×T output tensor
    Ŷs = Buffer(Hs, size(prediction, 1), batch_size, maxT)
    @inbounds for t ∈ axes(Ŷs, 3)
@@ -382,9 +376,9 @@ function (m::LAS)(x::AbstractVector{<:DenseVector})
    return m(X, T)
 end
 
-# dim_encoding  = (512, 512, 512, 512)
-# dim_attention = 512
-# dim_decoding  = 512
+# encoding_dim  = (512, 512, 512, 512)
+# attention_dim = 512
+# decoding_dim  = 512
 # dim_feed_forward = 128
 # dim_LSTM_speller = 512
 # initialize with uniform(-0.1, 0.1)
@@ -423,7 +417,7 @@ data_evl, length_evl,
 data_val, length_val =
 let batch_size = 88, valsetsize = 352
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_train.jld2" Xs ys PHONEMES
-   out_dim = length(PHONEMES)
+   output_dim = length(PHONEMES)
 
    if saved_results
       JLD2.@load "ListenAttendSpell.jl/models/TIMIT/las.jld2" las loss_val_saved
@@ -440,23 +434,23 @@ let batch_size = 88, valsetsize = 352
       )
       attention_dim   = 230
       decoder_out_dim = 230
-      las = LAS(encoder_dims, attention_dim, decoder_out_dim, out_dim)
+      las = LAS(encoder_dims, attention_dim, decoder_out_dim, output_dim)
    end
 
    multiplicity = time_squashing_factor(las)
-   data_trn = batch_dataset(Xs, ys, out_dim, batch_size, multiplicity)
+   data_trn = batch_dataset(Xs, ys, output_dim, batch_size, multiplicity)
 
    idxs_evl = sample(eachindex(ys), valsetsize; replace=false)
    ys_evl = ys[idxs_evl]
-   data_evl = batch_dataset(Xs[idxs_evl], ys_evl, out_dim, batch_size, multiplicity)
+   data_evl = batch_dataset(Xs[idxs_evl], ys_evl, output_dim, batch_size, multiplicity)
    length_evl = sum(length, ys_evl)
 
    JLD2.@load "data/TIMIT/TIMIT_MFCC/data_test.jld2" Xs ys
    ys_val = ys[1:valsetsize]
-   data_val = batch_dataset(Xs[1:valsetsize], ys_val, out_dim, batch_size, multiplicity)
+   data_val = batch_dataset(Xs[1:valsetsize], ys_val, output_dim, batch_size, multiplicity)
    length_val = sum(length, ys_val)
 
-   las |> gpu, PHONEMES, data_trn,
+   las, PHONEMES, data_trn,
    data_evl, length_evl,
    data_val, length_val
 end
