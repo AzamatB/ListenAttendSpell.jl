@@ -309,6 +309,8 @@ time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
 # 1. include actual one-hot prediction instead of current just output of the network
 # 2. add teacher forcing
+# 3. add shufling batch order after every epoch and withing batches during construction
+
 
 @inline function decode(m::LAS{M}, Hs::T, maxT::Integer) where {M <: DenseMatrix, T <: DenseArray{<:Real,3}}
    prediction′₀ = Zygote.bufferfrom(zeros(eltype(Hs), length(first(m.infer).b), 1))
