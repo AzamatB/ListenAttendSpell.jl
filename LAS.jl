@@ -307,6 +307,7 @@ end
 
 time_squashing_factor(m::LAS) = 2^(length(m.listen) - 1)
 
+# 0. rewrite `@ein context[d,b] := αᵢs[t,b] * Hs[d,t,b]` as `@ein context[d,b] := Hs[d,t,b] * αᵢs[t,b]` to elide the call to permutedims and ensure that `context` did not change.
 # 1. include actual one-hot prediction instead of current just output of the network
 # 2. add teacher forcing
 # 3. add shufling batch order after every epoch and withing batches during construction
@@ -336,13 +337,13 @@ end
       ϕsᵢ = m.query_ϕ(decoding)
       # compute energies via batch matrix multiplication
       # @ein Eᵢs[t,b] := ϕsᵢ[d,b] * ψHs[d,t,b]
-      Eᵢs = einsum(EinCode{((1,2), (1,3,2)), (3,2)}(), (ϕsᵢ, ψHs))::M′
+      Eᵢs = einsum(EinCode{((1,2), (1,3,2)), (3,2)}(), (ϕsᵢ, ψHs))::M′ # dispatches to batched_contract
       # check: Eᵢs ≈ reduce(hcat, diag.((ϕsᵢ',) .* ψhs))'
       # compute attentions weights
       αᵢs = softmax(Eᵢs)
       # compute attended context using Einstein summation convention, i.e. contextᵢ = Σᵤαᵢᵤhᵤ
       # @ein context[d,b] := αᵢs[t,b] * Hs[d,t,b]
-      context = einsum(EinCode{((1,2), (3,1,2)), (3,2)}(), (αᵢs, Hs))::M′
+      context = einsum(EinCode{((1,2), (3,1,2)), (3,2)}(), (αᵢs, Hs))::M′ # dispatches to batched_contract
       # check: context ≈ reduce(hcat, [sum(αᵢs[t,b] *Hs[:,t,b] for t ∈ axes(αᵢs, 1)) for b ∈ axes(αᵢs,2)])
       # predict probability distribution over character alphabet
       Ŷs[:,:,t] = prediction = m.infer([decoding; context]::M)
